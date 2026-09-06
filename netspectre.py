@@ -7,7 +7,8 @@ r"""
  \___| \_/ |_|\_\|_|  |_| |___\___|/_/ \_\_| |___|___/  |_| /_/\_\_|
                      ~ local network auditing toolkit ~
 
-Authorized-use only. Run against networks you own or have permission to test.
+Free software, provided "AS-IS" with no warranty: the author is not liable for
+misuse, damage or consequences. Run only against networks you are permitted to test.
 """
 
 from __future__ import annotations
@@ -118,7 +119,14 @@ def draw_banner(ansi: Ansi) -> None:
         f" {ansi.gray}v{__version__}{ansi.reset}"
         f"  {ansi.dim}~{ansi.reset}  {ansi.gray}local network auditing toolkit{ansi.reset}\n"
     )
-    print(c(ansi, "yellow", "  [!] Authorized-use only: audit networks you own or are permitted to test.\n"))
+    print(
+        c(
+            ansi,
+            "yellow",
+            "  [!] Free software, provided \"AS-IS\" — no warranty of any kind.\n"
+            "  [!] The author accepts no liability for misuse, damage or consequences of its use.\n",
+        )
+    )
 
 
 RULE = "─" * 78
