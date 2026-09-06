@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetSpectre — Guía de comandos</title>
+<style>
+  :root {
+    --bg: #0a0e12; --panel: #0d1319; --panel2: #101823; --border: #1d2a38;
+    --cyan: #3ddad7; --mag: #d857ff; --green: #4ade80; --yellow: #fbbf24;
+    --red: #f87171; --gray: #64748b; --text: #c9d6e3; --white: #e8f0f8;
+    --term-bg: #070b0f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background:
+      radial-gradient(1100px 500px at 50% -10%, #101823 0%, transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: "Cascadia Code", "Fira Code", Consolas, "DejaVu Sans Mono", monospace;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 26px 18px 60px; }
+
+  /* ---------- header ---------- */
+  .head { text-align: center; margin-bottom: 22px; }
+  .head h1 { color: var(--mag); font-size: 26px; letter-spacing: 3px; }
+  .head .sub { color: var(--gray); font-size: 13px; margin-top: 6px; }
+  .head pre { color: var(--cyan); font-size: 11px; line-height: 1.2; display: inline-block;
+    text-shadow: 0 0 14px rgba(61,218,215,.30); margin-bottom: 6px; }
+  .navlinks { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .navlinks a {
+    color: var(--text); text-decoration: none; font-size: 12px;
+    border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+    transition: .15s;
+  }
+  .navlinks a:hover { color: var(--cyan); border-color: var(--cyan); }
+
+  /* ---------- search ---------- */
+  .searchbar { position: sticky; top: 0; z-index: 20; background: linear-gradient(var(--bg) 82%, transparent); padding: 10px 0 12px; }
+  #q {
+    width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    color: var(--white); font: inherit; font-size: 14px; padding: 11px 16px; outline: none;
+  }
+  #q:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(61,218,215,.10); }
+  .count { color: var(--gray); font-size: 11px; margin-top: 6px; text-align: right; }
+
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    margin: 18px 0; overflow: hidden; scroll-margin-top: 90px;
+  }
+  .card.hide { display: none; }
+  .cardhead {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px 18px; background: var(--panel2); border-bottom: 1px solid var(--border);
+  }
+  .cmdname { color: var(--mag); font-weight: 700; font-size: 17px; }
+  .usage { color: var(--gray); font-size: 12px; }
+  .usage code { color: var(--yellow); background: var(--term-bg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 7px; }
+  .aliases { margin-left: auto; color: var(--gray); font-size: 11px; }
+  .aliases b { color: var(--cyan); font-weight: 400; }
+  .cardbody { padding: 14px 18px 16px; }
+  .row { display: flex; gap: 10px; margin: 9px 0; align-items: flex-start; }
+  .tag {
+    flex: 0 0 118px; text-align: center; font-size: 10.5px; letter-spacing: 1px;
+    border-radius: 6px; padding: 3px 0; margin-top: 1px;
+  }
+  .tag.what  { color: var(--cyan);   border: 1px solid #14424a; background: rgba(61,218,215,.06); }
+  .tag.use   { color: var(--green);  border: 1px solid #1d4429; background: rgba(74,222,128,.06); }
+  .tag.why   { color: var(--yellow); border: 1px solid #4a3b12; background: rgba(251,191,36,.06); }
+  .row p { font-size: 13.5px; line-height: 1.55; }
+  .row p b { color: var(--white); }
+
+  .term {
+    background: var(--term-bg); border: 1px solid var(--border); border-radius: 9px;
+    margin-top: 12px; overflow: hidden;
+  }
+  .termbar { display: flex; align-items: center; gap: 6px; background: #0a1017; border-bottom: 1px solid var(--border); padding: 6px 12px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .d1 { background: #ff5f57; } .d2 { background: #febc2e; } .d3 { background: #28c840; }
+  .termbar .t { color: var(--gray); font-size: 11px; margin-left: 4px; }
+  .termbar button {
+    margin-left: auto; background: transparent; border: 1px solid var(--border);
+    color: var(--gray); font: inherit; font-size: 10.5px; padding: 2px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .termbar button:hover { color: var(--cyan); border-color: var(--cyan); }
+  .termbar a.try {
+    margin-left: 8px; background: transparent; border: 1px solid var(--border);
+    color: var(--gray); font: inherit; font-size: 10.5px; padding: 2px 10px; border-radius: 6px;
+    text-decoration: none;
+  }
+  .termbar a.try:hover { color: var(--mag); border-color: var(--mag); }
+  .term pre {
+    padding: 12px 15px; font-size: 12.5px; line-height: 1.6; overflow-x: auto;
+    color: var(--text); white-space: pre;
+  }
+  .p { color: var(--mag); font-weight: 700; }          /* prompt */
+  .c { color: var(--gray); }                            /* comment */
+  .out { color: #9fb2c4; }                              /* output */
+  .hl { color: var(--green); }                          /* highlight result */
+  .wr { color: var(--yellow); }                         /* warning */
+  .rk { color: var(--red); font-weight: 700; }          /* risk badge */
+
+  /* ---------- extras ---------- */
+  .note {
+    margin-top: 26px; border: 1px solid #4a3b12; background: rgba(251,191,36,.05);
+    border-radius: 10px; padding: 13px 16px; font-size: 12.5px; color: var(--text);
+  }
+  .note b { color: var(--yellow); }
+  .foot { text-align: center; color: var(--gray); font-size: 11px; margin-top: 26px; }
+  .foot a { color: var(--cyan); text-decoration: none; }
+  .noresults { text-align: center; color: var(--gray); padding: 40px 0; display: none; }
+
+  @media (max-width: 640px) {
+    .row { flex-direction: column; gap: 5px; }
+    .tag { flex-basis: auto; align-self: flex-start; padding: 3px 14px; }
+    .aliases { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+<pre>
+   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
+  | \ | |  / \|_   _|_   _/ ___||_   _| / ___/ _ \|  _ \| ____|
+  |  \| | / _ \ | |   | | \___ \  | |  | | | |_) |  _|
+  | |\  |/ ___ \| |   | |  ___) | | |  | |__| |_| |  _ <| |___
+  |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
+</pre>
+    <h1>NETSPECTRE</h1>
+    <div class="sub">Guía visual y práctica de comandos · v1.0.0 · modo oscuro tipo terminal</div>
+    <nav class="navlinks" id="navlinks"></nav>
+  </div>
+
+  <div class="searchbar">
+    <input id="q" type="search" placeholder="Filtra comandos… (ej: udp, riesgo, perfil, json)" autofocus>
+    <div class="count" id="count"></div>
+  </div>
+
+  <main id="cards"></main>
+  <div class="noresults" id="noresults">— sin resultados — prueba con otra palabra —</div>
+
+  <div class="note">
+    <b>⚠ Uso autorizado únicamente.</b> Escanear redes ajenas sin permiso es
+    ilegal en la mayoría de países. Usa NetSpectre solo en tu propia red, en
+    laboratorios o con consentimiento firmado del propietario. Los ejemplos de
+    esta guía usan IPs de laboratorio (192.168.1.x, 10.0.0.x).
+  </div>
+
+  <div class="foot">
+    NetSpectre · <a href="demo.html">abrir el REPL interactivo de demo</a> · el motor real vive en <b>netspectre.py</b>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- datos
+// Cada comando: name, usage, aliases, what (1 frase), use (caso real),
+// example: array de líneas [clase, texto] renderizadas en la terminal fake.
+const COMMANDS = [
+  {
+    name: "help", usage: "help [comando]", aliases: "? · h", group: "básico",
+    what: "Muestra la lista de todos los comandos disponibles.",
+    use: "Nada más arrancar, para ver qué puedes hacer sin leer documentación.",
+    example: [
+      ["p",  "netspectre (no target) > "], ["", "help"],
+      ["out","\n┌────────────────── CORE COMMANDS ──────────────────┐"],
+      ["out","\n  CORE"],
+      ["out","\n    help         muestra esta ayuda (?, h)"],
+      ["out","\n    hosts        descubre hosts activos (scan, sweep)"],
+      ["out","\n    ports        audita puertos TCP (portscan, audit)"],
+      ["out","\n    udp          audita puertos UDP (udpscan)"],
+      ["out","\n    risks        hallazgos de riesgo (risk, vulns)"],
+      ["out","\n  ────────────────────────────────────────────────"],
+      ["out","\n  "], ["c", "… escribe 'help <comando>' para el detalle de uno"],
+    ],
+  },
+  {
+    name: "hosts", usage: "hosts [cidr | ip]", aliases: "scan · sweep", group: "descubrimiento",
+    what: "Recorre la red y te dice qué dispositivos están vivos.",
+    use: "Quieres saber qué hay conectado a tu WiFi: el router, tu portátil, la consola, ese dispositivo que no reconoces…",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "hosts"],
+      ["out","\n  [+] sondeando 254 host(s) en 192.168.1.0/24 (tcp-probe)..."],
+      ["out","\n"],
+      ["hl", "\n  [✓] 192.168.1.1      up — router.local · F8:66:C2:11:22:33 (TP-Link)"],
+      ["hl", "\n  [✓] 192.168.1.42     up — portatil.local · AC:DE:48:AA:BB:CC (Apple)"],
+      ["hl", "\n  [✓] 192.168.1.77     up — raspberrypi.local · DC:A6:32:DE:AD:01 (Raspberry Pi)"],
+      ["out","\n"],
+      ["out","\n  [+] escaneo completado en 2.1s — "], ["hl", "3 host(s) activos"], ["out", " de 254"],
+      ["",  "\n"],
+      ["c",  "\n# cada línea: IP · estado · nombre · MAC (fabricante)"],
+    ],
+  },
+  {
+    name: "ports", usage: "ports [cidr|ip] [rango]", aliases: "portscan · audit", group: "auditoría",
+    what: "Comprueba qué puertos TCP tiene abiertos cada dispositivo (puertas de entrada a servicios).",
+    use: "Detectaste una Raspberry en tu red y quieres saber si expone SSH, web o algo inesperado antes de quedarte tranquilo.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "ports"],
+      ["out","\n  [✓] 192.168.1.1      53/tcp     domain"],
+      ["out","\n  [✓] 192.168.1.1      80/tcp     http            HTTP/1.1 200 OK"],
+      ["rk", "\n  [✓] 192.168.1.1      445/tcp    microsoft-ds    [RISK:smb]"],
+      ["hl", "\n  [✓] 192.168.1.77     22/tcp     ssh             SSH-2.0-OpenSSH_9.2p1"],
+      ["",  "\n"],
+      ["c",  "\n# top100 por defecto · banners: lo que el servicio 'dice' de sí mismo"],
+      ["c",  "\n# rangos:  ports 192.168.1.77 22,80,443   ·   ports 8000-8100   ·   ports all"],
+    ],
+  },
+  {
+    name: "udp", usage: "udp [cidr|ip] [rango]", aliases: "udpscan", group: "auditoría",
+    what: "Igual que 'ports' pero para UDP: DNS, NTP, SNMP, mDNS y compañía.",
+    use: "Los router filtran muchos servicios UDP; esto confirma si tu router realmente responde DNS y NetBIOS, o si hay algo raro escuchando.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "udp 192.168.1.1 53,123,137"],
+      ["out","\n  [✓] 192.168.1.1      53/udp      domain          "], ["hl", "dns-response"],
+      ["wr", "\n  [✓] 192.168.1.1      123/udp     ntp             [warn:ntp]"],
+      ["wr", "\n  [✓] 192.168.1.1      137/udp     netbios-ns      [warn:netbios] netbios-response"],
+      ["",  "\n"],
+      ["c",  "\n# estados: 'open' respondió · 'open|filtered' silencio (típico) · 'closed' rechazó"],
+    ],
+  },
+  {
+    name: "risks", usage: "risks [all | high | medium]", aliases: "risk · vulns", group: "análisis",
+    what: "Resumen de todo lo peligroso encontrado en la última auditoría, ordenado por gravedad.",
+    use: "Terminaste el escaneo y quieres la lista corta: qué arreglar primero, con la receta exacta debajo de cada problema.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "risks"],
+      ["out","\n┌──────────────── RISK REPORT — ALL (2 FINDING(S)) ────────────────┐"],
+      ["out","\n  SEV      HOST              PORT      SERVICE        REASON"],
+      ["rk", "\n  HIGH     192.168.1.1      445/tcp   microsoft-ds   SMB: EternalBlue/WannaCry vector"],
+      ["out","\n           "], ["c", "↳ fix: disable SMBv1, keep patched, require signing"],
+      ["wr", "\n  MED      192.168.1.1      137/udp   netbios-ns     leaks machine and domain info"],
+      ["out","\n           "], ["c", "↳ fix: disable NetBIOS over TCP/IP if unused"],
+      ["out","\n"],
+      ["wr", "\n  [!] most exposed host: 192.168.1.1 (risk score 4) — prioritize there"],
+      ["",  "\n"],
+      ["c",  "\n# filtros:  risks high   ·   risks medium"],
+    ],
+  },
+  {
+    name: "osint", usage: "osint", aliases: "arp", group: "descubrimiento",
+    what: "Muestra tu propia IP, tu hostname y la tabla ARP (quién ha hablado con tu máquina).",
+    use: "Antes de escanear, para confirmar en qué red estás y qué dispositivos tu equipo ya 'conoce'.",
+    example: [
+      ["p",  "netspectre (no target) > "], ["", "osint"],
+      ["out","\n┌────────────────── LOCAL INTELLIGENCE ──────────────────┐"],
+      ["out","\n  [+] host: mi-pc · IP local: "], ["hl", "192.168.1.42"],
+      ["out","\n  [+] caché ARP: 3 entradas"],
+      ["out","\n      · 192.168.1.1    F8:66:C2:11:22:33 (TP-Link)"],
+      ["out","\n      · 192.168.1.77   DC:A6:32:DE:AD:01 (Raspberry Pi)"],
+      ["",  "\n"],
+      ["c",  "\n# si un vecino de red te resulta desconocido, ya tienes pista"],
+    ],
+  },
+  {
+    name: "set", usage: "set [opción] [valor]", aliases: "config", group: "configuración",
+    what: "Cambia los ajustes de la sesión: objetivo, rangos de puertos, velocidad, timeouts.",
+    use: "Tu red es lenta o tiene firewalls que descartan paquetes: subes timeouts y bajas workers para no perder resultados.",
+    example: [
+      ["p",  "netspectre (no target) > "], ["", "set target 192.168.1.0/24"],
+      ["hl", "\n  [✓] target => 192.168.1.0/24"],
+      ["p",  "\nnetspectre (192.168.1.0/24) > "], ["", "set port_timeout 2s"],
+      ["hl", "\n  [✓] port_timeout => 2.0s"],
+      ["",  "\n"],
+      ["c",  "\n# 'set' a secas muestra la tabla con todas las opciones y sus valores"],
+      ["c",  "\n# opciones: target · port_range · timeouts · workers · ping_sweep · udp_*"],
+    ],
+  },
+  {
+    name: "profile", usage: "profile save|load|list|show|delete [nombre]", aliases: "profiles · pf", group: "configuración",
+    what: "Guarda tu configuración actual con nombre y la recupera cuando quieras, incluso cerrando el programa.",
+    use: "Auditas casa y trabajo: 'profile save casa' y 'profile save oficina' y cambias de contexto con un solo comando.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "profile save casa mi red doméstica"],
+      ["hl", "\n  [✓] profile casa saved (target=192.168.1.0/24)"],
+      ["p",  "\nnetspectre (192.168.1.0/24) > "], ["", "profile load casa"],
+      ["hl", "\n  [✓] profile casa loaded — 10 opción(es) aplicadas"],
+      ["",  "\n"],
+      ["c",  "\n# también al arrancar:  python3 netspectre.py --profile casa"],
+      ["c",  "\n# el prompt te recuerda el perfil:  netspectre (192.168.1.0/24:@casa) >"],
+    ],
+  },
+  {
+    name: "status", usage: "status", aliases: "st · info", group: "básico",
+    what: "Ficha de la sesión: objetivo actual, ajustes y qué se ha escaneado hasta ahora.",
+    use: "Volviste al terminal tras un rato y no recuerdas qué tenías puesto ni qué escaneaste.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "status"],
+      ["out","\n┌─────────────────── SESSION STATUS ───────────────────┐"],
+      ["out","\n  uptime      :: 00:12:47"],
+      ["out","\n  target      :: "], ["hl", "192.168.1.0/24"],
+      ["out","\n  port_range  :: top100"],
+      ["out","\n  last scan   :: 5 host(s) activos en memoria"],
+      ["out","\n  last audit  :: 17 puerto(s) abierto(s) en memoria"],
+      ["out","\n  riesgo      :: 3 high · 2 medium"],
+    ],
+  },
+  {
+    name: "save", usage: "save [fichero.json]", aliases: "report · export", group: "salida",
+    what: "Guarda todo lo encontrado en un informe JSON en disco.",
+    use: "Auditaron la red de tu cliente y necesitas entregar evidencia ordenada, o guardar un 'antes' para comparar dentro de un mes.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "save"],
+      ["hl", "\n  [✓] report saved to netspectre-report-20260906-223000.json (5 host(s), 17 tcp + 24 udp result(s))"],
+      ["wr", "\n  [!] includes risk summary: 3 high, 2 medium finding(s)"],
+      ["",  "\n"],
+      ["c",  "\n# el JSON trae hosts, puertos, riesgos y el 'fix' recomendado de cada hallazgo"],
+    ],
+  },
+  {
+    name: "history", usage: "history", aliases: "hist", group: "salida",
+    what: "Lista los comandos que has escrito en esta sesión (y en las anteriores).",
+    use: "Repetiste un escaneo complejo la semana pasada y no recuerdas la sintaxis exacta que usaste.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "history"],
+      ["out","\n┌────────────────── COMMAND HISTORY ──────────────────┐"],
+      ["out","\n     1  set target 192.168.1.0/24"],
+      ["out","\n     2  hosts"],
+      ["out","\n     3  ports"],
+      ["out","\n     4  udp"],
+      ["out","\n     5  risks high"],
+    ],
+  },
+  {
+    name: "clear", usage: "clear", aliases: "cls", group: "salida",
+    what: "Limpia la pantalla y deja solo el prompt.",
+    use: "La terminal está llena de resultados viejos y quieres empezar de cero sin perder la sesión.",
+    example: [
+      ["p", "netspectre (192.168.1.0/24) > "], ["", "clear"],
+      ["c",  "\n# (la pantalla se limpia; la sesión y sus datos se conservan)"],
+    ],
+  },
+  {
+    name: "exit", usage: "exit", aliases: "quit · q · Ctrl+D", group: "básico",
+    what: "Cierra NetSpectre.",
+    use: "Terminaste la auditoría y quieres salir limpiamente.",
+    example: [
+      ["p", "netspectre (192.168.1.0/24) > "], ["", "exit"],
+      ["out","\n  [*] shutting down NetSpectre — happy hunting. o/"],
+    ],
+  },
+];
+
+// ------------------------------------- recetas listas para copiar (extra)
+const RECIPES = [
+  {
+    title: "Auditoría rápida de tu red en 3 comandos",
+    lines: [
+      ["p", "netspectre (no target) > "], ["", "set target 192.168.1.0/24"],
+      ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "hosts"],
+      ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "ports"],
+    ],
+  },
+  {
+    title: "Informe completo TCP + UDP por terminal (para jq)",
+    lines: [
+      ["p", "$ "], ["", "python3 netspectre.py --plain --json -t 192.168.1.0/24 --udp | jq ."],
+      ["c",  "\n# progreso por stderr, informe por stdout → tubería limpia"],
+    ],
+  },
+  {
+    title: "Solo los riesgos altos con su arreglo (para tickets)",
+    lines: [
+      ["p", "$ "], ["", "python3 netspectre.py --plain --json -t 10.0.0.0/24 --udp \\"],
+      ["",  "\n    | jq -r '.risk_summary.findings[] | \"\\(.proto)/\\(.port) [\\(.level)] \\(.tag): \\(.fix)\"'"],
+      ["hl", "\ntcp/445  [high] smb: disable SMBv1, keep patched, require signing..."],
+    ],
+  },
+];
+
+// ---------------------------------------------------------------- render
+const CARDS = document.getElementById("cards");
+const NAV = document.getElementById("navlinks");
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function termHTML(example) {
+  let html = "";
+  for (const [cls, text] of example) {
+    const parts = esc(text).split("\n");
+    parts.forEach((part, i) => {
+      if (i > 0) html += "<br>";
+      if (part) html += `<span class="${cls || ""}">${part}</span>`;
+    });
+  }
+  return html;
+}
+
+function cardHTML(c) {
+  const ex = termHTML(c.example);
+  return `
+  <section class="card" id="cmd-${c.name}" data-name="${c.name} ${c.aliases} ${c.group} ${esc(c.what)} ${esc(c.use)}">
+    <div class="cardhead">
+      <span class="cmdname">${c.name}</span>
+      <span class="usage"><code>${esc(c.usage)}</code></span>
+      <span class="aliases">alias: <b>${esc(c.aliases)}</b> · grupo: ${c.group}</span>
+    </div>
+    <div class="cardbody">
+      <div class="row"><span class="tag what">QUÉ HACE</span><p>${esc(c.what)}</p></div>
+      <div class="row"><span class="tag use">PARA QUÉ</span><p>${esc(c.use)}</p></div>
+      <div class="row"><span class="tag why">EJEMPLO</span>
+        <div class="term" style="flex:1; margin-top:0">
+          <div class="termbar">
+            <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+            <span class="t">netspectre — ejemplo real</span>
+            <button data-copy="${esc(c.example.map(l => l[1]).join(""))}">copiar</button>
+            <a class="try" href="demo.html#run=${encodeURIComponent(c.name)}" target="_blank" data-cmd="${c.name}">probar ▸</a>
+          </div>
+          <pre>${ex}</pre>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
+const recipesHTML = `
+  <section class="card" id="recetas" data-name="recetas recipes one-liners jq json pipeline tubería informes">
+    <div class="cardhead">
+      <span class="cmdname">recetas</span>
+      <span class="usage"><code>flujos completos listos para copiar</code></span>
+    </div>
+    <div class="cardbody">
+      ${RECIPES.map(r => `
+        <p style="color:var(--cyan); font-size:13px; margin:12px 0 6px">▸ ${esc(r.title)}</p>
+        <div class="term">
+          <div class="termbar">
+            <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+            <span class="t">bash</span>
+            <button data-copy="${esc(r.lines.map(l => l[1]).join(""))}">copiar</button>
+          </div>
+          <pre>${termHTML(r.lines)}</pre>
+        </div>`).join("")}
+    </div>
+  </section>`;
+
+CARDS.innerHTML = COMMANDS.map(cardHTML).join("") + recipesHTML;
+NAV.innerHTML = COMMANDS.map(c => `<a href="#cmd-${c.name}">${c.name}</a>`).join("") + `<a href="#recetas">recetas</a>`;
+
+// ---------------------------------------------------------------- copy
+document.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-copy]");
+  if (!btn) return;
+  const raw = btn.dataset.copy.replace(/\\n/g, "\n");
+  const label = btn.textContent;
+  (navigator.clipboard ? navigator.clipboard.writeText(raw) : Promise.reject())
+    .catch(() => {})
+    .finally(() => { btn.textContent = "¡copiado!"; setTimeout(() => btn.textContent = label, 1400); });
+});
+
+// "probar ▸": abre el REPL demo; si demo.html no está servida junto a esta
+// página (preview de un solo fichero), copia el comando como fallback.
+let demoAvailable = null;
+const demoProbe = () => demoAvailable ??= fetch("demo.html", { method: "HEAD" })
+  .then(r => r.ok).catch(() => false);
+document.addEventListener("click", async e => {
+  const link = e.target.closest("a.try[data-cmd]");
+  if (!link) return;
+  if (await demoProbe()) return;               // demo servida → deja pasar el enlace
+  e.preventDefault();
+  const cmd = link.dataset.cmd;
+  (navigator.clipboard ? navigator.clipboard.writeText(cmd) : Promise.reject())
+    .catch(() => {})
+    .finally(() => {
+      link.textContent = "copiado — pégalo en tu terminal";
+      setTimeout(() => link.textContent = "probar ▸", 2200);
+    });
+});
+
+// ---------------------------------------------------------------- search
+const q = document.getElementById("q");
+const count = document.getElementById("count");
+const cards = [...document.querySelectorAll(".card")];
+function applyFilter() {
+  const needle = q.value.trim().toLowerCase();
+  let visible = 0;
+  for (const card of cards) {
+    const hay = (card.dataset.name + " " + card.innerText).toLowerCase();
+    const show = !needle || hay.includes(needle);
+    card.classList.toggle("hide", !show);
+    if (show) visible++;
+  }
+  document.getElementById("noresults").style.display = visible ? "none" : "block";
+  count.textContent = needle ? `${visible} de ${cards.length} comandos` : "";
+}
+q.addEventListener("input", applyFilter);
+
+// deep-link #cmd-xxx resalta la tarjeta
+window.addEventListener("load", () => {
+  if (location.hash.startsWith("#cmd-")) {
+    const el = document.querySelector(location.hash);
+    if (el) { el.style.borderColor = "var(--cyan)"; setTimeout(() => el.style.borderColor = "", 2400); }
+  }
+});
+</script>
+</body>
+</html>

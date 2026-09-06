@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# NetSpectre artifacts
+netspectre-report-*.json
+netspectre-risks-*.md
+netspectre-risks-*.csv
+scan.log
+
+# Freebuff workspace metadata
+.freebuff/
+
+# OS / editor
+.DS_Store
+Thumbs.db
