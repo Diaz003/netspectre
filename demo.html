@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NetSpectre — Web REPL Demo</title>
+<style>
+  :root {
+    --bg: #0a0e12; --panel: #0d1319; --border: #1d2a38;
+    --cyan: #3ddad7; --mag: #d857ff; --green: #4ade80; --yellow: #fbbf24;
+    --red: #f87171; --gray: #64748b; --text: #c9d6e3; --white: #e8f0f8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 50% -10%, #101823 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Cascadia Code", "Fira Code", Consolas, "DejaVu Sans Mono", monospace;
+    min-height: 100vh; padding: 24px 16px 40px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  .head { text-align: center; margin-bottom: 18px; }
+  .head pre { color: var(--cyan); text-shadow: 0 0 12px rgba(61,218,215,.35); display: inline-block; text-align: left; font-size: 13px; line-height: 1.25; }
+  .head h1 { color: var(--mag); font-size: 20px; letter-spacing: 2px; margin-top: 4px; }
+  .head .sub { color: var(--gray); font-size: 12px; margin-top: 4px; }
+  .badges { margin-top: 8px; }
+  .badge { display: inline-block; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 11px; color: var(--gray); margin: 0 4px; }
+  .badge.sim { color: var(--yellow); border-color: #4a3b12; }
+  .badge.ansi { color: var(--cyan); border-color: #14424a; }
+  .term {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5); overflow: hidden;
+  }
+  .bar { display: flex; align-items: center; gap: 8px; background: #0a1017; border-bottom: 1px solid var(--border); padding: 9px 12px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .d1 { background: #ff5f57; } .d2 { background: #febc2e; } .d3 { background: #28c840; }
+  .bar .t { color: var(--gray); font-size: 12px; margin-left: 6px; }
+  .bar .btn { margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--gray); font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+  .bar .btn:hover { color: var(--cyan); border-color: var(--cyan); }
+  #out { height: 480px; overflow-y: auto; padding: 14px 16px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  #out::-webkit-scrollbar { width: 9px; } #out::-webkit-scrollbar-thumb { background: #1d2a38; border-radius: 6px; }
+  .inrow { display: flex; align-items: center; border-top: 1px solid var(--border); background: #0a1017; padding: 10px 14px; }
+  .inrow .ps { color: var(--mag); font-weight: 700; white-space: nowrap; }
+  .inrow .ps .ctx { color: var(--gray); font-weight: 400; }
+  #cmd { flex: 1; background: transparent; border: 0; outline: 0; color: var(--white); font: inherit; font-size: 13px; margin-left: 8px; caret-color: var(--cyan); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; justify-content: center; }
+  .chip { background: transparent; border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer; }
+  .chip:hover { border-color: var(--cyan); color: var(--cyan); }
+  .howto { margin-top: 22px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px 18px; }
+  .howto h2 { color: var(--cyan); font-size: 14px; letter-spacing: 1px; margin-bottom: 10px; }
+  .howto p { font-size: 12.5px; color: var(--text); margin: 8px 0; }
+  .howto code { background: #0a1017; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; color: var(--yellow); font-size: 12px; }
+  .howto pre { background: #0a1017; border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin: 10px 0; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+  .howto .cm { color: var(--gray); } .howto .pr { color: var(--green); }
+  .foot { text-align: center; color: var(--gray); font-size: 11px; margin-top: 18px; }
+  .foot .w { color: var(--yellow); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+<pre>
+   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
+  | \ | |  / \|_   _|_   _/ ___||_   _| / ___/ _ \|  _ \| ____|
+  |  \| | / _ \ | |   | | \___ \  | |  | |  | | | | | |_) |  _|
+  | |\  |/ ___ \| |   | |  ___) | | |  | |__| |_| |  _ <| |___
+  |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
+</pre>
+    <h1>NETSPECTRE</h1>
+    <div class="sub">v1.0.0 — interactive local network auditing toolkit · terminal REPL demo</div>
+    <div class="badges">
+      <span class="badge sim">⚠ motor simulado: sin paquetes reales</span>
+      <span class="badge ansi">estética ANSI estilo Metasploit/Aircrack</span>
+      <span class="badge">python3 netspectre.py — 100% stdlib</span>
+    </div>
+  </div>
+
+  <div class="term">
+    <div class="bar">
+      <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+      <span class="t">netspectre — bash — 92×26</span>
+      <button class="btn" id="clearbtn">limpiar</button>
+      <button class="btn" id="demobtn">auto-demo</button>
+    </div>
+    <div id="out"></div>
+    <div class="inrow">
+      <span class="ps" id="ps">netspectre <span class="ctx">(no target)</span> &gt;</span>
+      <input id="cmd" autocomplete="off" spellcheck="false" placeholder="escribe un comando… (help, hosts, ports, status, set, osint, save, exit)" />
+    </div>
+  </div>
+
+  <div class="chips">
+    <button class="chip" data-c="help">help</button>
+    <button class="chip" data-c="set target 192.168.1.0/24">set target 192.168.1.0/24</button>
+    <button class="chip" data-c="hosts">hosts</button>
+    <button class="chip" data-c="ports">ports</button>
+    <button class="chip" data-c="ports 22,80,443">ports 22,80,443</button>
+    <button class="chip" data-c="udp">udp</button>
+    <button class="chip" data-c="risks">risks</button>
+    <button class="chip" data-c="osint">osint</button>
+    <button class="chip" data-c="profile list">profile list</button>
+    <button class="chip" data-c="status">status</button>
+    <button class="chip" data-c="save">save</button>
+  </div>
+
+  <div class="howto">
+    <h2>▌ CÓMO EJECUTAR LA HERRAMIENTA REAL (terminal)</h2>
+    <p>Esta página es una <b>demo visual simulada</b>. El programa real es <code>netspectre.py</code> en la raíz del repositorio y se ejecuta desde tu terminal:</p>
+    <pre><span class="cm"># 1) abre una terminal en la carpeta del proyecto</span>
+<span class="pr">cd /ruta/a/NetSpectre</span>
+
+<span class="cm"># 2) modo interactivo (REPL estilo Metasploit)</span>
+<span class="pr">python3 netspectre.py</span>
+
+<span class="cm">#    o indica el objetivo desde el inicio:</span>
+<span class="pr">python3 netspectre.py --target 192.168.1.0/24</span>
+
+<span class="cm"># 3) escaneo automático sin menú (hosts + puertos) y sale</span>
+<span class="pr">python3 netspectre.py --plain</span>
+
+<span class="cm"># extras: --no-color · --log eventos.txt · --version</span></pre>
+    <p><b>Comandos dentro del REPL:</b> <code>help</code> · <code>hosts [cidr|ip]</code> · <code>ports [cidr|ip] [rango]</code> · <code>osint</code> · <code>set &lt;opción&gt; &lt;valor&gt;</code> · <code>status</code> · <code>history</code> · <code>save [report.json]</code> · <code>clear</code> · <code>exit</code></p>
+    <p><b>Permisos:</b> el escaneo TCP funciona sin privilegios. Para el barrido ICMP (<code>set ping_sweep on</code>) se necesita <code>sudo</code> (Linux/macOS) o ejecutar como Administrador (Windows).</p>
+    <p><b>⚠ Uso autorizado únicamente:</b> audita solo redes propias o con permiso explícito.</p>
+  </div>
+
+  <div class="foot">NetSpectre demo · <span class="w">solo fines educativos / auditorías autorizadas</span> · el motor real (TCP + ICMP + ARP) vive en netspectre.py</div>
+</div>
+
+<script>
+"use strict";
+// ---------- paleta ANSI ----------
+const R = "\u001b[0m";
+const COLORS = {
+  red: s => `\u001b[31m${s}${R}`, green: s => `\u001b[32m${s}${R}`,
+  yellow: s => `\u001b[33m${s}${R}`, mag: s => `\u001b[95m${s}${R}`,
+  cyan: s => `\u001b[96m${s}${R}`, gray: s => `\u001b[90m${s}${R}`,
+  white: s => `\u001b[97m${s}${R}`, bold: s => `\u001b[1m${s}${R}`, dim: s => `\u001b[2m${s}${R}`,
+  b_red: s => `\u001b[91m${s}${R}`, b_green: s => `\u001b[92m${s}${R}`,
+  b_yellow: s => `\u001b[93m${s}${R}`, b_blue: s => `\u001b[94m${s}${R}`,
+  b_magenta: s => `\u001b[95m${s}${R}`, b_cyan: s => `\u001b[96m${s}${R}`,
+};
+const plus = COLORS.cyan("[+]"), warn = COLORS.yellow("[!]"), err = COLORS.red("[x]"), okk = COLORS.green("[✓]");
+const C = {
+  mag: "#d857ff", cyan: "#3ddad7", green: "#4ade80", yellow: "#fbbf24",
+  red: "#f87171", gray: "#64748b", white: "#e8f0f8", text: "#c9d6e3", reset: "#c9d6e3",
+  b_red: "#ff6b6b", b_green: "#5dff8f", b_yellow: "#ffd75e", b_blue: "#6ea8ff",
+  b_magenta: "#e07aff", b_cyan: "#67e8f9", mag2: "#c084fc", dim: "#475569", bold: "",
+};
+
+// ---------- motor simulado ----------
+const state = { target: null, portRange: "top100", lastHosts: [], lastResults: {}, lastUdp: {}, start: Date.now(),
+  hostTimeout: 0.5, portTimeout: 1.0, workers: 128, portWorkers: 256, udpTimeout: 2.0, udpWorkers: 128, pingSweep: false, ipsScanned: 0, portsTested: 0,
+  profile: null };
+
+// ---------- perfiles de sesión (localStorage) ----------
+const PROFILE_STORE = "netspectre-profiles";
+function readProfiles() {
+  try { return JSON.parse(localStorage.getItem(PROFILE_STORE) || "{}"); } catch (e) { return {}; }
+}
+function writeProfiles(p) { localStorage.setItem(PROFILE_STORE, JSON.stringify(p)); }
+function snapshotState() {
+  return { target: state.target, portRange: state.portRange, hostTimeout: state.hostTimeout,
+    portTimeout: state.portTimeout, workers: state.workers, portWorkers: state.portWorkers,
+    udpTimeout: state.udpTimeout, udpWorkers: state.udpWorkers, pingSweep: state.pingSweep };
+}
+function validProfileName(n) { return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(n); }
+
+async function cmdProfile(args) {
+  const sub = (args[0] || "list").toLowerCase();
+  const name = args[1] || "";
+  const note = args.slice(2).join(" ");
+  const store = readProfiles();
+  blank();
+  if (sub === "list" || sub === "ls") {
+    const names = Object.keys(store).sort();
+    echo(title(`saved profiles (${names.length})`));
+    if (!names.length) {
+      echo(`  ${warn} no hay perfiles aún — crea uno con: ${COLORS.b_cyan("profile save home")}`);
+    } else {
+      echo(`  ${COLORS.bold("NAME".padEnd(18))} ${COLORS.bold("SAVED".padEnd(21))} TARGET`);
+      echo(`  ${COLORS.gray(RULE)}`);
+      for (const n of names) {
+        const p = store[n];
+        echo(`  ${COLORS.b_cyan(n.padEnd(18))} ${COLORS.gray((p.saved || "").padEnd(21))} ${p.values.target || "(unset)"}`);
+      }
+      echo(`  ${COLORS.gray(RULE)}`);
+    }
+    echo(COLORS.gray("  * en la demo se guardan en localStorage; en la herramienta real, en ~/.netspectre/profiles/"));
+    blank();
+    return;
+  }
+  if (sub === "save") {
+    if (!name) { echo(`  ${err} uso: profile save <nombre> [nota]`); return; }
+    if (!validProfileName(name)) { echo(`  ${err} nombre inválido (1-64: letras, dígitos, ., _, -)`); return; }
+    store[name] = { saved: new Date().toLocaleString(), note, values: snapshotState() };
+    writeProfiles(store);
+    state.profile = name;
+    echo(`  ${okk} perfil ${COLORS.b_yellow(name)} guardado (target=${state.target || "(unset)"})`);
+  } else if (sub === "load" || sub === "use") {
+    if (!name) { echo(`  ${err} uso: profile load <nombre>`); return; }
+    const p = store[name];
+    if (!p) { echo(`  ${err} perfil '${esc(name)}' no encontrado — usa 'profile list'`); return; }
+    const v = p.values;
+    Object.assign(state, {
+      target: v.target ?? state.target, portRange: v.portRange ?? state.portRange,
+      hostTimeout: v.hostTimeout ?? state.hostTimeout, portTimeout: v.portTimeout ?? state.portTimeout,
+      workers: v.workers ?? state.workers, portWorkers: v.portWorkers ?? state.portWorkers,
+      udpTimeout: v.udpTimeout ?? state.udpTimeout, udpWorkers: v.udpWorkers ?? state.udpWorkers,
+      pingSweep: v.pingSweep ?? state.pingSweep,
+    });
+    state.lastHosts = []; state.lastResults = {}; state.lastUdp = {};
+    state.profile = name;
+    echo(`  ${okk} perfil ${COLORS.b_yellow(name)} cargado — target => ${state.target || "(unset)"}`);
+  } else if (sub === "show") {
+    const p = store[name];
+    if (!p) { echo(`  ${err} perfil '${esc(name)}' no encontrado`); return; }
+    echo(title(`profile: ${name}`));
+    echo(`  ${COLORS.gray("saved:")} ${p.saved}    ${COLORS.gray("nota:")} ${p.note || "-"}`);
+    for (const [k, val] of Object.entries(p.values))
+      echo(`  ${COLORS.b_cyan(k.padEnd(14))} ${COLORS.b_yellow(String(val))}`);
+    blank();
+  } else if (sub === "delete" || sub === "rm") {
+    if (!store[name]) { echo(`  ${err} perfil '${esc(name)}' no encontrado`); return; }
+    delete store[name];
+    writeProfiles(store);
+    if (state.profile === name) state.profile = null;
+    echo(`  ${okk} perfil ${COLORS.b_yellow(name)} eliminado`);
+  } else {
+    echo(`  ${err} subcomando desconocido '${esc(sub)}' — usa save, load, list, show o delete`);
+  }
+  updatePrompt();
+}
+const NETS = {
+  "192.168.1.0/24": [
+    { ip: "192.168.1.1",   host: "router.local",  mac: "F8:66:C2:11:22:33", vendor: "TP-Link",
+      ports: [[53, "domain", ""], [80, "http", "HTTP/1.1 200 OK (Server: TP-LINK Httpd)"], [443, "https", "(tls)"], [8080, "http-proxy", ""]],
+      udps: [[53, "domain", "dns-response"], [123, "ntp", ""], [137, "netbios-ns", "netbios-response"]] },
+    { ip: "192.168.1.42",  host: "kali-box.local", mac: "AC:DE:48:AA:BB:CC", vendor: "Apple",
+      ports: [[22, "ssh", "SSH-2.0-OpenSSH_9.6p1"], [80, "http", "HTTP/1.1 200 OK (Server: nginx/1.24.0)"]] },
+    { ip: "192.168.1.77",  host: "raspberrypi.local", mac: "DC:A6:32:DE:AD:01", vendor: "Raspberry Pi",
+      ports: [[22, "ssh", "SSH-2.0-OpenSSH_9.2p1"], [445, "microsoft-ds", ""], [8000, "http-alt", "HTTP/1.1 200 OK (Server: Python/3.11)"], [5900, "vnc", "RFB 003.008"]],
+      udps: [[5353, "mdns", "mdns-response (2 answer(s))"]] },
+    { ip: "192.168.1.101", host: "printer.local", mac: "00:17:88:5E:C0:DE", vendor: "Signify (Philips Hue)",
+      ports: [[80, "http", "HTTP/1.1 200 OK (Server: Boa/0.94)"], [631, "ipp", ""]] },
+    { ip: "192.168.1.150", host: "nas.local", mac: "00:E0:4C:0F:F1:CE", vendor: "Realtek",
+      ports: [[139, "netbios-ssn", ""], [445, "microsoft-ds", ""], [443, "https", "(tls)"], [5000, "upnp", "HTTP/1.1 200 OK (Server: Synology)"], [5001, "unknown", ""]] },
+  ],
+};
+function hostsOf(cidr) {
+  if (NETS[cidr]) return NETS[cidr];
+  if (cidr === "127.0.0.1" || cidr === "localhost")
+    return [{ ip: "127.0.0.1", host: "localhost", mac: "", vendor: "", ports: [], udps: [] }];
+  return null;
+}
+function resolvePorts(spec) {
+  const s = (spec || "").trim().toLowerCase();
+  if (!s || s === "top100" || s === "top" || s === "default") return "top100";
+  if (s === "all" || s === "1-65535") return "all";
+  if (!/^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$/.test(s)) return null;
+  return s;
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function isIPorCIDR(t) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/.exec(t);
+  if (!m) return false;
+  if (m[5]) { const n = +m[6]; if (n < 8 || n > 32) return false; }
+  return m.slice(1, 5).every(x => +x <= 255);
+}
+function looksLikePortSpec(t) {
+  const s = t.trim().toLowerCase();
+  if (["top100", "top", "default", "all", "1-65535"].includes(s)) return true;
+  return /^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$/.test(s);
+}
+const RULE = "─".repeat(76);
+// catálogo de riesgo (espejo del RISK_PORTS de netspectre.py)
+const RISK = {
+  23:   ["high", "telnet"], 5555: ["high", "adb"], 6379: ["high", "redis"],
+  11211:["high", "memcached"], 2375: ["high", "docker"], 3389: ["high", "rdp"],  5900: ["high", "vnc"], 5901: ["high", "vnc"], 445: ["high", "smb"], 623: ["high", "ipmi"],
+  69: ["high", "tftp"],
+  21: ["medium", "ftp"], 139: ["medium", "netbios"], 161: ["medium", "snmp"],
+  1433: ["medium", "mssql"], 3306: ["medium", "mysql"], 5432: ["medium", "postgresql"],
+  2049: ["medium", "nfs"], 5000: ["medium", "upnp"], 6443: ["medium", "k8s-api"],
+  9200: ["medium", "elasticsearch"],
+  // UDP (espejo de UDP_RISK)
+  123: ["medium", "ntp"], 137: ["medium", "netbios"], 138: ["medium", "netbios"],
+  162: ["medium", "snmp"], 514: ["medium", "syslog"], 1900: ["medium", "ssdp"],
+  5060: ["medium", "sip"],
+};
+function badge(port) {
+  const r = RISK[port];
+  if (!r) return "";
+  return r[0] === "high" ? COLORS.b_red(`[RISK:${r[1]}]`) : COLORS.yellow(`[warn:${r[1]}]`);
+}
+function riskCol(port) {
+  const r = RISK[port];
+  if (!r) return COLORS.gray("-");
+  return (r[0] === "high" ? COLORS.b_red(`[RISK:${r[1]}]`) : COLORS.yellow(`[warn:${r[1]}]`)).padEnd(16 + r[1].length + 2);
+}
+function title(t) { const inner = ` ${t.toUpperCase()} `; return COLORS.bold(COLORS.cyan(`┌${inner.padStart(Math.floor((76 + inner.length) / 2), "─").padEnd(76, "─")}┐`)); }
+
+// ---------- render ----------
+const out = document.getElementById("out");
+const input = document.getElementById("cmd");
+const psEl = document.getElementById("ps");
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function ansiToHtml(text) {
+  let open = 0;
+  return esc(text).replace(/\u001b\[(\d+)m/g, (_, code) => {
+    switch (code) {
+      case "31": open++; return `<span style="color:${C.red}">`;
+      case "32": open++; return `<span style="color:${C.green}">`;
+      case "33": open++; return `<span style="color:${C.yellow}">`;
+      case "90": open++; return `<span style="color:${C.gray}">`;
+      case "91": open++; return `<span style="color:${C.b_red}">`;
+      case "92": open++; return `<span style="color:${C.b_green}">`;
+      case "93": open++; return `<span style="color:${C.b_yellow}">`;
+      case "94": open++; return `<span style="color:${C.b_blue}">`;
+      case "95": open++; return `<span style="color:${C.b_magenta}">`;
+      case "96": open++; return `<span style="color:${C.b_cyan}">`;
+      case "97": open++; return `<span style="color:${C.white}">`;
+      case "1": open++; return `<span style="color:${C.white};font-weight:700">`;
+      case "2": open++; return `<span style="color:${C.dim}">`;
+      case "0": { const close = "</span>".repeat(open); open = 0; return close; }
+      default: return "";
+    }
+  }) + "</span>".repeat(open);
+}
+function println(html) { const d = document.createElement("div"); d.innerHTML = html; out.appendChild(d); out.scrollTop = out.scrollHeight; }
+function echo(text) { println(ansiToHtml(text)); }
+function blank() { println("&nbsp;"); }
+function updatePrompt() {
+  let ctx = state.target ? (state.portRange !== "top100" ? `${state.target}:ports=${state.portRange}` : state.target) : "no target";
+  if (state.profile) ctx += `@${state.profile}`;
+  psEl.innerHTML = `netspectre <span class="ctx">(${esc(ctx)})</span> &gt;`;
+}
+function uptime() {
+  const s = Math.floor((Date.now() - state.start) / 1000);
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(x => String(x).padStart(2, "0")).join(":");
+}
+async function typeLine(line, speed = 14) {
+  echo(line);
+  await sleep(speed);
+}
+
+// ---------- banner ----------
+const BANNER =
+`   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
+  | \\ | |  / \\|_   _|_   _/ ___||_   _| / ___/ _ \\|  _ \\| ____|
+  |  \\| | / _ \\ | |   | | \\___ \\  | |  | |  | | | | | |_) |  _|
+  | |\\  |/ ___ \\| |   | |  ___) | | |  | |__| |_| |  _ <| |___
+  |_| \\_/_/   \\_\\_|   |_| |____/  |_|   \\____\\___/|_| \\_\\_____|`;
+function drawBanner() {
+  echo(COLORS.cyan(BANNER));
+  echo(`        ${COLORS.bold(COLORS.mag("NetSpectre"))} ${COLORS.gray("v1.0.0")}  ${COLORS.dim("~")}  ${COLORS.gray("local network auditing toolkit")}`);
+  blank();
+  echo(`  ${warn} ${COLORS.yellow("Authorized-use only: audit networks you own or are permitted to test.")}`);
+  blank();
+  echo(`  ${plus} sesión iniciada — ${new Date().toLocaleString()}`);
+  echo(`  ${plus} esta demo usa un ${COLORS.yellow("motor simulado")} — la herramienta real es ${COLORS.cyan("python3 netspectre.py")}`);
+  blank();
+  echo(COLORS.gray("  escribe 'help' para ver los comandos · pulsa 'auto-demo' para un recorrido guiado."));
+  blank();
+}
+
+// ---------- comandos ----------
+async function cmdHelp(args) {
+  blank();
+  if (args[0]) {
+    echo(`  ${plus} sin detalle extendido en la demo — consulta 'help' o el README.`);
+    blank(); return;
+  }
+  echo(title("core commands"));
+  echo(`  ${COLORS.bold(COLORS.b_blue("CORE"))}`);
+  echo(`    ${COLORS.b_cyan("help")}        muestra esta ayuda${COLORS.gray(" (?, h)")}`);
+  echo(`    ${COLORS.b_cyan("status")}      resumen de sesión y estadísticas${COLORS.gray(" (st, info)")}`);
+  echo(`    ${COLORS.b_cyan("exit")}        salir de NetSpectre${COLORS.gray(" (quit, q)")}`);
+  echo(`  ${COLORS.bold(COLORS.b_blue("DISCOVERY & AUDIT"))}`);
+  echo(`    ${COLORS.b_cyan("hosts")}       descubre hosts activos en una subred${COLORS.gray(" (scan, sweep)")}`);
+  echo(`    ${COLORS.b_cyan("ports")}       audita puertos TCP abiertos${COLORS.gray(" (portscan, audit)")}`);
+  echo(`    ${COLORS.b_cyan("udp")}         audita puertos de servicio UDP comunes${COLORS.gray(" (udpscan)")}`);
+  echo(`    ${COLORS.b_cyan("risks")}      hallazgos de riesgo de la última auditoría${COLORS.gray(" (risk, vulns)")}`);
+  echo(`    ${COLORS.b_cyan("osint")}       intel local: host, ruta de salida y caché ARP${COLORS.gray(" (arp)")}`);
+  echo(`  ${COLORS.bold(COLORS.b_blue("CONFIGURATION"))}`);
+  echo(`    ${COLORS.b_cyan("set")}         ver o cambiar opciones de sesión${COLORS.gray(" (config)")}`);
+  echo(`    ${COLORS.b_cyan("profile")}     guardar/cargar configuraciones entre sesiones${COLORS.gray(" (pf)")}`);
+  echo(`  ${COLORS.bold(COLORS.b_blue("OUTPUT & HISTORY"))}`);
+  echo(`    ${COLORS.b_cyan("history")}     historial de comandos${COLORS.gray(" (hist)")}`);
+  echo(`    ${COLORS.b_cyan("save")}        exporta resultados a un informe JSON${COLORS.gray(" (report, export)")}`);
+  echo(`    ${COLORS.b_cyan("clear")}       limpia la pantalla${COLORS.gray(" (cls)")}`);
+  blank();
+  echo(COLORS.gray("  * en la herramienta real también tienes 'clear' y 'set ping_sweep on' (requiere root)."));
+  blank();
+}
+
+async function cmdSet(args) {
+  if (!args.length) {
+    blank();
+    echo(title("session options"));
+    echo(`  ${COLORS.bold("OPTION".padEnd(14))} ${COLORS.bold("VALUE".padEnd(20))} DESCRIPTION`);
+    echo(`  ${COLORS.gray(RULE)}`);
+    echo(`  ${COLORS.b_cyan("target".padEnd(14))} ${COLORS.b_yellow((state.target || "(unset)").padEnd(20))} CIDR / IP a auditar`);
+    echo(`  ${COLORS.b_cyan("port_range".padEnd(14))} ${COLORS.b_yellow(state.portRange.padEnd(20))} top100, all, 22,80,443 o 1000-2000`);
+    echo(`  ${COLORS.b_cyan("host_timeout".padEnd(14))} ${COLORS.b_yellow("0.5s".padEnd(20))} timeout por sonda (descubrimiento)`);
+    echo(`  ${COLORS.b_cyan("port_timeout".padEnd(14))} ${COLORS.b_yellow("1.0s".padEnd(20))} timeout por sonda (puertos)`);
+    echo(`  ${COLORS.b_cyan("workers".padEnd(14))} ${COLORS.b_yellow("128".padEnd(20))} hilos para descubrimiento`);
+    echo(`  ${COLORS.b_cyan("port_workers".padEnd(14))} ${COLORS.b_yellow("256".padEnd(20))} hilos para auditoría de puertos`);
+    echo(`  ${COLORS.b_cyan("ping_sweep".padEnd(14))} ${COLORS.b_yellow("off".padEnd(20))} barrido ICMP previo (root/admin)`);
+    echo(`  ${COLORS.gray(RULE)}`);
+    blank();
+    return;
+  }
+  const key = args[0].toLowerCase(), val = args.slice(1).join(" ");
+  if (key === "target") {
+    if (!isIPorCIDR(val)) { echo(`  ${err} objetivo inválido: '${esc(val)}' — usa una IP o CIDR (ej. 192.168.1.0/24)`); return; }
+    state.target = val; state.lastHosts = []; state.lastResults = {};
+    echo(`  ${okk} ${COLORS.green("target => " + val)}`);
+  } else if (key === "port_range") {
+    const p = resolvePorts(val);
+    if (p === null) { echo(`  ${err} rango inválido: '${esc(val)}'`); return; }
+    state.portRange = p;
+    echo(`  ${okk} ${COLORS.green("port_range => " + p)}`);
+  } else if (key === "ping_sweep") {
+    const on = ["on", "true", "1", "yes"].includes(val.toLowerCase());
+    state.pingSweep = on;
+    echo(`  ${okk} ${COLORS.green("ping_sweep => " + (on ? "on" : "off"))}`);
+    if (on) echo(`  ${warn} en la herramienta real, el ICMP crudo requiere root/Administrator.`);
+  } else {
+    echo(`  ${err} opción desconocida: '${esc(key)}' — escribe 'set' para listar.`);
+  }
+}
+
+async function cmdHosts(args) {
+  const target = args[0] || state.target;
+  if (!target) { echo(`  ${err} sin objetivo — usa: hosts <cidr|ip>  (o 'set target <cidr>')`); return; }
+  if (!isIPorCIDR(target)) { echo(`  ${err} objetivo inválido: '${esc(target)}'`); return; }
+  const table = hostsOf(target);
+  blank();
+  echo(`  ${plus} sondeando ${table ? (isIPorCIDR(target) && target.includes("/") ? "254" : "1") : "254"} host(s) en ${COLORS.white(target)} (tcp-probe)...`);
+  echo(`  ${plus} workers=${state.workers} timeout=${state.hostTimeout}s ping-sweep=${state.pingSweep ? "on" : "off"}`);
+  blank();
+  await sleep(350);
+  state.ipsScanned += 254;
+  if (!table) {
+    echo(`  ${err} la demo solo simula ${COLORS.cyan("192.168.1.0/24")} y ${COLORS.cyan("127.0.0.1")}.`);
+    echo(`  ${warn} para redes reales ejecuta la herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
+    blank(); return;
+  }
+  for (const h of table) {
+    const extras = [h.host, h.mac + (h.vendor ? ` (${h.vendor})` : "")].filter(Boolean).join(" · ");
+    echo(`  ${okk} ${COLORS.white(h.ip.padEnd(16))} ${COLORS.b_green("up")}${extras ? " " + COLORS.gray("— " + extras) : ""}`);
+    await sleep(160);
+  }
+  echo(`  ${plus} escaneo completado — ${COLORS.b_green(String(table.length))} host(s) activos`);
+  blank();
+  echo(title(`active hosts (${table.length})`));
+  echo(`  ${COLORS.bold("IP".padEnd(17))} ${COLORS.bold("STATE".padEnd(7))} ${COLORS.bold("HOSTNAME".padEnd(22))} ${COLORS.bold("MAC".padEnd(19))} VENDOR`);
+  echo(`  ${COLORS.gray(RULE)}`);
+  for (const h of table)
+    echo(`  ${h.ip.padEnd(17)} ${COLORS.b_green("up".padEnd(7))} ${h.host.padEnd(22)} ${COLORS.gray(h.mac.padEnd(19))} ${h.vendor}`);
+  echo(`  ${COLORS.gray(RULE)}`);
+  blank();
+  state.lastHosts = table;
+}
+
+async function cmdPorts(args) {
+  let target = "", rangeArg = "";
+  for (const a of args) {
+    if (!target && !looksLikePortSpec(a)) target = a;
+    else if (!rangeArg) rangeArg = a;
+  }
+  if (!target) target = state.target;
+  if (!target) { echo(`  ${err} sin objetivo — usa: ports <cidr|ip> [rango]`); return; }
+  if (rangeArg) { const p = resolvePorts(rangeArg); if (p === null) { echo(`  ${err} rango inválido`); return; } state.portRange = p; }
+  const table = hostsOf(target);
+  if (!table) {
+    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
+    return;
+  }
+  let ips = table.map(h => h.ip);
+  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
+  if (target.includes("/")) ips = state.lastHosts.map(h => h.ip);
+  const nPorts = state.portRange === "top100" ? 65 : state.portRange === "all" ? 65535 : state.portRange.split(",").reduce((n, s) => n + (s.includes("-") ? (+s.split("-")[1] - +s.split("-")[0] + 1) : 1), 0);
+  blank();
+  echo(`  ${plus} auditando ${ips.length} host(s) × ${nPorts} puerto(s) = ${COLORS.white(String(ips.length * nPorts))} sondas (workers=${state.portWorkers}, timeout=${state.portTimeout}s)`);
+  blank();
+  const found = [];
+  for (const ip of ips) {
+    const h = table.find(x => x.ip === ip);
+    if (!h) continue;
+    for (const [port, svc, banner] of h.ports) {
+      state.portsTested++;
+      found.push({ ip, port, svc, banner, risk: RISK[port] ? RISK[port][1] : "", level: RISK[port] ? RISK[port][0] : "" });
+      const b = badge(port);
+      echo(`  ${okk} ${COLORS.white(ip.padEnd(16))} ${COLORS.b_cyan((port + "/tcp").padEnd(10))} ${COLORS.mag(svc.padEnd(14))}${b ? " " + b : ""} ${banner ? COLORS.gray(banner.slice(0, 40)) : ""}`);
+      await sleep(110);
+    }
+  }
+  echo(`  ${plus} auditoría completada — ${COLORS.b_cyan(String(found.length))} puerto(s) abierto(s) en ${ips.length} host(s)`);
+  blank();
+  if (found.length) {
+    echo(title("open port matrix"));
+    echo(`  ${COLORS.bold("HOST".padEnd(17))} ${COLORS.bold("PORT/PROTO".padEnd(12))} ${COLORS.bold("SERVICE".padEnd(16))} ${COLORS.bold("RISK".padEnd(16))} BANNER`);
+    echo(`  ${COLORS.gray(RULE)}`);
+    for (const f of found)
+      echo(`  ${f.ip.padEnd(17)} ${(f.port + "/tcp").padEnd(12)} ${f.svc.padEnd(16)} ${riskCol(f.port)} ${COLORS.gray(f.banner.slice(0, 38))}`);
+    echo(`  ${COLORS.gray(RULE)}`);
+    const risky = found.filter(f => f.level);
+    if (risky.length) {
+      const high = risky.filter(f => f.level === "high").length;
+      echo(`\n  ${COLORS.yellow("[!]")} ${risky.length} exposición(es) de riesgo: ${COLORS.b_red(String(high) + " high")}, ${COLORS.yellow(String(risky.length - high) + " medium")}`);
+      for (const f of risky.slice(0, 8))
+        echo(`      ${badge(f.port)} ${f.ip.padEnd(15)} ${f.port}/tcp ${f.svc.padEnd(14)} ${COLORS.gray("revisar exposición y credenciales")}`);
+    }
+    blank();
+  }
+  state.lastResults = {};
+  for (const f of found) {
+    (state.lastResults[f.ip] = state.lastResults[f.ip] || []).push({ port: f.port, service: f.svc, banner: f.banner, risk: f.risk, risk_level: f.level });
+  }
+}
+
+function collectFindings() {
+  const rows = [];
+  for (const [ip, ports] of Object.entries(state.lastResults))
+    for (const p of ports)
+      if (p.risk_level)
+        rows.push({ ip, port: p.port, proto: "tcp", service: p.service, level: p.risk_level, tag: p.risk, detail: p.banner });
+  for (const [ip, lst] of Object.entries(state.lastUdp))
+    for (const r of lst)
+      if (r.risk_level)
+        rows.push({ ip, port: r.port, proto: "udp", service: r.service, level: r.risk_level, tag: r.risk, detail: r.response });
+  rows.sort((a, b) => (a.level === "high" ? 0 : 1) - (b.level === "high" ? 0 : 1)
+    || a.ip.split(".").reduce((n, o) => n * 256 + +o, 0) - b.ip.split(".").reduce((n, o) => n * 256 + +o, 0)
+    || a.port - b.port);
+  return rows;
+}
+
+const FIXES = {
+  telnet: "desactiva el demonio telnet; usa SSH con claves",
+  adb: "mantén ADB solo por USB; nunca en tcp/5555", ipmi: "cambia credenciales BMC, VLAN de gestión",
+  redis: "requirepass + bind 127.0.0.1 + ACLs", memcached: "deshabilita UDP (-U 0), bind local, SASL",
+  docker: "solo unix socket; si TCP, con TLS y client certs", rdp: "exige NLA, lockout, MFA/VPN, parcheado",
+  vnc: "túnel SSH/VPN, contraseña fuerte", smb: "fuera SMBv1, firmas requeridas, firewall de host",
+  netbios: "desactiva NetBIOS sobre TCP/IP si no se usa", snmp: "migra a SNMPv3 authPriv, sin 'public'",
+  mssql: "bind local/VLAN, cuentas dedicadas, TLS", mysql: "bind local/VLAN, cuentas dedicadas, TLS",
+  postgresql: "bind local/VLAN, cuentas dedicadas, TLS", nfs: "NFSv4+Kerberos, nunca *(rw), root_squash",
+  upnp: "desactiva UPnP en la gateway si no se necesita", "k8s-api": "RBAC, sin auth anónima, solo VPN/CA",
+  elasticsearch: "activa x-pack security (auth + TLS)", ntp: "'restrict default noquery', ntpd/chrony parcheado",
+  syslog: "transporte TLS, rate-limit, valida emisores", ssdp: "filtra multicast 239.255.255.250:1900",
+  sip: "SIPS/TLS, fail2ban en registros", tftp: "desactiva salvo necesidad; chroot read-only",
+  ftp: "reemplaza por SFTP/FTPS; sin anónimo",
+};
+
+async function cmdRisks(args) {
+  const flt = (args[0] || "all").toLowerCase();
+  if (!("all high medium".split(" ")).includes(flt)) { echo(`  ${err} filtro desconocido '${esc(flt)}' — usa all, high o medium`); return; }
+  if (!Object.keys(state.lastResults).length && !Object.keys(state.lastUdp).length) {
+    echo(`  ${warn} no hay auditoría en memoria — ejecuta 'ports' o 'udp' primero`); return;
+  }
+  const all = collectFindings();
+  const highN = all.filter(f => f.level === "high").length;
+  const findings = flt === "all" ? all : all.filter(f => f.level === flt);
+  blank();
+  echo(title(`risk report — ${flt} (${findings.length} finding(s))`));
+  echo(`  ${plus} última auditoría: ${COLORS.b_red(String(highN) + " high")}, ${COLORS.yellow(String(all.length - highN) + " medium")} en ${String(new Set(all.map(f => f.ip)).size)} host(s)`);
+  if (!findings.length) { echo(`  ${okk} sin hallazgos ${flt === "all" ? "de riesgo" : flt} — la exposición parece limpia`); blank(); return; }
+  echo(`  ${COLORS.bold("SEV".padEnd(9))} ${COLORS.bold("HOST".padEnd(17))} ${COLORS.bold("PORT".padEnd(12))} ${COLORS.bold("SERVICE".padEnd(15))} REASON`);
+  echo(`  ${COLORS.gray(RULE)}`);
+  const REASONS = {
+    telnet: "plaintext protocol: expone credenciales y sesión", adb: "shell no autenticado frecuente",
+    ipmi: "captura de hashes y credenciales por defecto", redis: "suele desplegarse sin auth",
+    memcached: "volcado de memoria sin auth", docker: "toma de control total del host",
+    rdp: "fuerza bruta y exploits tipo BlueKeep", vnc: "auth débil, sin cifrado por defecto",
+    smb: "vector EternalBlue/WannaCry", tftp: "sin auth:configs y firmware descargables",
+    ftp: "credenciales en claro", netbios: "filtra máquinas, usuarios y dominio",
+    snmp: "comunidades por defecto filtran config", syslog: "logs sin cifrar",
+    ssdp: "superficie de control UPnP", nfs: "exports montables por cualquiera",
+    sip: "enumeración y abuso de registro", ntp: "amplificación si está mal configurado",
+  };
+  for (const f of findings) {
+    const sev = f.level === "high" ? COLORS.b_red("HIGH") : COLORS.yellow("MED");
+    const sevPad = f.level === "high" ? sev : sev + "    ";
+    echo(`  ${sevPad.padEnd(9)} ${f.ip.padEnd(17)} ${(f.port + "/" + f.proto).padEnd(12)} ${f.service.padEnd(15)} ${COLORS.gray(REASONS[f.tag] || f.detail || "")}`);
+    if (FIXES[f.tag]) echo(`  ${" ".repeat(8)} ${COLORS.cyan("↳ fix:")} ${COLORS.gray(FIXES[f.tag])}`);
+  }
+  echo(`  ${COLORS.gray(RULE)}`);
+  const perHost = {};
+  for (const f of findings) perHost[f.ip] = (perHost[f.ip] || 0) + (f.level === "high" ? 2 : 1);
+  const worst = Object.entries(perHost).sort((a, b) => b[1] - a[1])[0];
+  echo(`  ${warn} host más expuesto: ${COLORS.b_yellow(worst[0])} (riesgo ${worst[1]}) — prioriza la remediación ahí`);
+  blank();
+}
+
+async function cmdUdp(args) {
+  let target = "", rangeArg = "";
+  for (const a of args) {
+    if (!target && !looksLikePortSpec(a)) target = a;
+    else if (!rangeArg) rangeArg = a;
+  }
+  if (!target) target = state.target;
+  if (!target) { echo(`  ${err} sin objetivo — usa: udp <cidr|ip> [rango]`); return; }
+  const table = hostsOf(target);
+  if (!table) {
+    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
+    return;
+  }
+  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
+  let ips = target.includes("/") ? state.lastHosts.map(h => h.ip) : table.map(h => h.ip);
+  blank();
+  echo(`  ${plus} auditoría UDP: ${ips.length} host(s) × 24 puerto(s) (workers=${state.udpWorkers}, timeout=${state.udpTimeout}s)`);
+  echo(`  ${warn} UDP no tiene handshake: el silencio se reporta como 'open|filtered' (semántica de nmap)`);
+  blank();
+  const hits = [];
+  for (const ip of ips) {
+    const h = table.find(x => x.ip === ip);
+    if (!h || !h.udps) continue;
+    for (const [port, svc, resp] of h.udps) {
+      state.portsTested++;
+      const st = resp ? "open" : "open|filtered";
+      hits.push({ ip, port, svc, resp, risk: RISK[port] ? RISK[port][1] : "", level: RISK[port] ? RISK[port][0] : "", st });
+      const color = st === "open" ? COLORS.b_green : COLORS.yellow;
+      const b = badge(port);
+      echo(`  ${okk} ${COLORS.white(ip.padEnd(16))} ${color((port + "/udp").padEnd(11))} ${COLORS.mag(svc.padEnd(14))}${b ? " " + b : ""} ${resp ? COLORS.gray(resp.slice(0, 40)) : ""}`);
+      await sleep(130);
+    }
+  }
+  const opened = hits.filter(h => h.st === "open").length;
+  echo(`  ${plus} auditoría UDP completada — ${COLORS.b_green(String(opened))} abierto(s) confirmado(s), ${COLORS.yellow(String(hits.length - opened))} open|filtered`);
+  const risky = hits.filter(h => h.level);
+  if (risky.length) {
+    const high = risky.filter(f => f.level === "high").length;
+    echo(`  ${warn} ${risky.length} exposición(es) UDP de riesgo: ${COLORS.b_red(String(high) + " high")}, ${COLORS.yellow(String(risky.length - high) + " medium")}`);
+  } else {
+    echo(`  ${okk} sin servicios UDP de riesgo catalogados`);
+  }
+  blank();
+  if (hits.length) {
+    echo(title("udp findings"));
+    echo(`  ${COLORS.bold("HOST".padEnd(17))} ${COLORS.bold("PORT/PROTO".padEnd(12))} ${COLORS.bold("SERVICE".padEnd(15))} ${COLORS.bold("STATE".padEnd(15))} ${COLORS.bold("RISK".padEnd(16))} RESPONSE`);
+    echo(`  ${COLORS.gray(RULE)}`);
+    for (const h of hits) {
+      const st = h.st === "open" ? COLORS.b_green("open".padEnd(15)) : COLORS.yellow("open|filtered".padEnd(15));
+      echo(`  ${h.ip.padEnd(17)} ${(h.port + "/udp").padEnd(12)} ${h.svc.padEnd(15)} ${st} ${riskCol(h.port)} ${COLORS.gray(h.resp)}`);
+    }
+    echo(`  ${COLORS.gray(RULE)}`);
+    blank();
+  }
+  state.lastUdp = {};
+  for (const h of hits) (state.lastUdp[h.ip] = state.lastUdp[h.ip] || []).push({ port: h.port, state: h.st, service: h.svc, risk: h.risk, risk_level: h.level });
+}
+
+async function cmdOsint() {
+  blank();
+  echo(title("local intelligence"));
+  echo(`  ${plus} host: ${COLORS.white("netspectre-demo")} · IP local: ${COLORS.white("192.168.1.42")}`);
+  echo(`  ${plus} plataforma: ${COLORS.gray("WebSim · motor simulado (sin tráfico real)")}`);
+  const arp = [
+    ["192.168.1.1", "F8:66:C2:11:22:33", "TP-Link"],
+    ["192.168.1.77", "DC:A6:32:DE:AD:01", "Raspberry Pi"],
+    ["192.168.1.101", "00:17:88:5E:C0:DE", "Signify (Philips Hue)"],
+  ];
+  echo(`  ${plus} caché ARP: ${arp.length} entradas (simuladas)`);
+  for (const [ip, mac, v] of arp)
+    echo(`      ${COLORS.gray("·")} ${ip.padEnd(16)} ${COLORS.gray(mac)} ${COLORS.gray(`(${v})`)}`);
+  blank();
+  echo(COLORS.gray("  * en la herramienta real esto lee tu caché ARP y detecta tu IP de salida reales."));
+  blank();
+}
+
+async function cmdStatus() {
+  const openPorts = Object.values(state.lastResults).reduce((n, arr) => n + arr.length, 0);
+  blank();
+  echo(title("session status"));
+  const rows = [
+    ["uptime", uptime()],
+    ["target", state.target || "(unset)"],
+    ["port_range", state.portRange],
+    ["timeouts", `host=${state.hostTimeout}s port=${state.portTimeout}s`],
+    ["workers", `hosts=${state.workers} ports=${state.portWorkers}`],
+    ["ping_sweep", state.pingSweep ? "on" : "off"],
+    ["last scan", `${state.lastHosts.length} host(s) activos en memoria`],
+    ["last audit", `${openPorts} puerto(s) abierto(s) en memoria`],
+    ["riesgo", `${Object.values(state.lastResults).flat().filter(p => p.risk_level === "high").length} high · ${Object.values(state.lastResults).flat().filter(p => p.risk_level === "medium").length} medium`],
+    ["sondas", `${state.ipsScanned} host-sonda(s) · ${state.portsTested} puerto-sonda(s)`],
+    ["motor", "SIMULADO (demo web)"],
+  ];
+  const w = Math.max(...rows.map(r => r[0].length));
+  for (const [k, v] of rows) echo(`  ${COLORS.b_cyan(k.padEnd(w))} ${COLORS.gray("::")} ${v}`);
+  blank();
+}
+
+async function cmdHistory(hist) {
+  if (!hist.length) { echo(`  ${plus} historial vacío`); return; }
+  blank();
+  echo(title("command history"));
+  hist.slice(-15).forEach((h, i) => echo(`  ${COLORS.gray(String(i + 1).padStart(4))}  ${esc(h)}`));
+  blank();
+}
+
+async function cmdSave() {
+  if (!state.lastHosts.length && !Object.keys(state.lastResults).length) {
+    echo(`  ${warn} nada que guardar aún — ejecuta 'hosts' o 'ports' primero`); return;
+  }
+  const name = `netspectre-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.json`;
+  const openPorts = Object.values(state.lastResults).reduce((n, arr) => n + arr.length, 0);
+  echo(`  ${okk} informe guardado en ${COLORS.b_yellow(name)} (${state.lastHosts.length} host(s), ${openPorts} puerto(s))`);
+  echo(COLORS.gray("  * en la herramienta real se escribe JSON real en disco; en la demo es simulado."));
+}
+
+// ---------- dispatcher ----------
+const hist = [];
+let histIdx = -1, busy = false;
+async function run(line) {
+  if (busy) return;
+  busy = true;
+  println(`<span style="color:${C.mag};font-weight:700">netspectre</span><span style="color:${C.gray}">(${esc(state.target || "no target")})</span><span style="color:${C.b_magenta};font-weight:700">&gt;</span> ${esc(line)}`);
+  const parts = line.trim().split(/\s+/).filter(Boolean);
+  if (parts.length) {
+    hist.push(line); histIdx = hist.length;
+    const name = parts[0].toLowerCase(), args = parts.slice(1);
+    try {
+      if (name === "help" || name === "?" || name === "h") await cmdHelp(args);
+      else if (name === "set" || name === "config") await cmdSet(args);
+      else if (name === "profile" || name === "profiles" || name === "pf") await cmdProfile(args);
+      else if (name === "hosts" || name === "scan" || name === "sweep") await cmdHosts(args);
+      else if (name === "ports" || name === "portscan" || name === "audit") await cmdPorts(args);
+      else if (name === "udp" || name === "udpscan") await cmdUdp(args);
+      else if (name === "risks" || name === "risk" || name === "vulns") await cmdRisks(args);
+      else if (name === "osint" || name === "arp") await cmdOsint();
+      else if (name === "status" || name === "st" || name === "info") await cmdStatus();
+      else if (name === "history" || name === "hist") await cmdHistory(hist.slice(0, -1));
+      else if (name === "save" || name === "report" || name === "export") await cmdSave();
+      else if (name === "clear" || name === "cls") out.innerHTML = "";
+      else if (name === "exit" || name === "quit" || name === "q")
+        echo(`\n  ${COLORS.mag("[*]")} cerrando NetSpectre — happy hunting. ${COLORS.gray("o/")}\n  ${warn} la demo se reinicia al recargar la página; pulsa de nuevo para seguir explorando.`);
+      else echo(`  ${err} comando desconocido '${esc(name)}' — escribe ${COLORS.b_cyan("help")}`);
+    } catch (e) { echo(`  ${err} error interno en '${esc(name)}'`); }
+  }
+  updatePrompt();
+  busy = false;
+}
+
+// ---------- auto-demo ----------
+async function autoDemo() {
+  if (busy) return;
+  out.innerHTML = "";
+  for (const c of ["help", "set target 192.168.1.0/24", "hosts", "ports", "udp", "risks", "osint", "status"]) {
+    await run(c);
+    await sleep(450);
+  }
+  echo(COLORS.gray("\n  [fin de la auto-demo] prueba tus propios comandos arriba ↑"));
+}
+
+// ---------- eventos ----------
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    const v = input.value; input.value = "";
+    if (v.trim()) run(v);
+  } else if (e.key === "ArrowUp") {
+    if (histIdx > 0) { histIdx--; input.value = hist[histIdx] || ""; }
+    e.preventDefault();
+  } else if (e.key === "ArrowDown") {
+    if (histIdx < hist.length) { histIdx++; input.value = hist[histIdx] || ""; }
+    e.preventDefault();
+  }
+});
+document.querySelectorAll(".chip").forEach(ch => ch.addEventListener("click", () => run(ch.dataset.c)));
+document.getElementById("clearbtn").addEventListener("click", () => { out.innerHTML = ""; });
+document.getElementById("demobtn").addEventListener("click", autoDemo);
+
+drawBanner();
+updatePrompt();
+
+// deep-link: demo.html#run=hosts%204.4.4.4 ejecuta el comando automáticamente
+window.addEventListener("load", () => {
+  const m = /^#run=(.+)$/.exec(location.hash);
+  if (m) {
+    const cmd = decodeURIComponent(m[1]);
+    setTimeout(() => run(cmd), 500);
+  }
+});
+</script>
+</body>
+</html>
