@@ -9,7 +9,12 @@ venv/
 netspectre-report-*.json
 netspectre-risks-*.md
 netspectre-risks-*.csv
+netspectre-risks-*
 scan.log
+
+# Scan outputs and logs
+ip.txt
+*.log
 
 # Freebuff workspace metadata
 .freebuff/
