@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netspectre"
+version = "2.0.0"
+description = "Local network auditing toolkit with an interactive Metasploit-style REPL and an async HTTP fingerprinting engine"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "NetSpectre contributors" }]
+keywords = ["network", "security", "audit", "scanner", "fingerprinting", "lan", "recon"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.optional-dependencies]
+# fingerprinting engine (http_fingerprinter.py) — everything else is stdlib-only
+fingerprint = ["aiohttp>=3.9,<4"]
+
+[project.scripts]
+netspectre = "netspectre:main"
+
+[tool.setuptools]
+py-modules = ["netspectre", "http_fingerprinter"]

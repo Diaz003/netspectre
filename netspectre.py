@@ -14,6 +14,7 @@ misuse, damage or consequences. Run only against networks you are permitted to t
 from __future__ import annotations
 
 import argparse
+import asyncio
 import concurrent.futures as cf
 import csv
 import ipaddress
@@ -30,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "NetSpectre Team"
 
 # ============================================================
@@ -385,7 +386,53 @@ REMEDIATIONS: dict[str, str] = {
     "sip": "use SIPS/TLS, fail2ban on registrations, hide topology from untrusted LANs",
     "tftp": "disable unless essential; chroot with read-only dirs; restrict source IPs",
     "ftp": "replace with SFTP/FTPS; disable anonymous login; enforce TLS",
+    # -- v2.0: web management surfaces (from HTTP fingerprints) --
+    "web-luci": "bind LuCI to the LAN only, force HTTPS, use a strong root password and disable WAN access",
+    "web-webfig": "restrict WebFig to a management VLAN/IP list, keep RouterOS patched, disable unused services",
+    "web-hnap": "disable HNAP/remote management on D-Link gear; update firmware (known unauthenticated takeover vectors)",
+    "web-plain-http": "serve the admin panel over HTTPS, add auth (401+), and restrict access to a management VLAN",
 }
+
+
+# ---------------------------------------------------------------------------
+#  v2.0: web-panel risk rules — evaluated over HTTP fingerprints collected
+#  by the 'fingerprint' command. All regexes precompiled at import time.
+#    rule-id -> (level, tag, matcher, reason)
+#    matcher runs against "service + title + evidence layers" of the endpoint
+# ---------------------------------------------------------------------------
+WEB_PANEL_RULES: tuple[tuple[str, str, re.Pattern[str], str], ...] = (
+    ("high", "web-hnap", re.compile(r"\bHNAP1?\b|\bD-Link\b", re.I),
+     "D-Link HNAP SOAP interface exposed: known unauthenticated router-takeover vectors"),
+    ("medium", "web-luci", re.compile(r"\bLuCI\b|OpenWrt", re.I),
+     "OpenWrt LuCI admin panel exposed on the LAN"),
+    ("medium", "web-webfig", re.compile(r"\bWebFig\b|\bRouterOS\b|\bMikroTik\b", re.I),
+     "MikroTik WebFig/RouterOS admin interface exposed on the LAN"),
+)
+# Plain-HTTP management detection: title/admin markers + cleartext scheme
+_RX_ADMIN_TITLE = re.compile(r"\badmin\b|\brouter\b|\bgateway\b|\blogin\b|\bmanagement\b", re.I)
+
+
+def match_web_finding(fp: dict) -> tuple[str, str, str] | None:
+    """Return (level, tag, reason) for a fingerprint dict, or None."""
+    if not isinstance(fp, dict) or fp.get("error"):
+        return None
+    blob = " ".join(
+        str(fp.get(k, "")) for k in ("service", "title")
+    ) + " " + " ".join(
+        " ".join(v) for v in (fp.get("layers") or {}).values() if isinstance(v, list)
+    )
+    for level, tag, rx, reason in WEB_PANEL_RULES:
+        if rx.search(blob):
+            return level, tag, reason
+    # cleartext HTTP that looks like a management UI (title hint or auth wall)
+    if fp.get("scheme") == "http" and (
+        (fp.get("status_code") in (200, 401))
+        and (_RX_ADMIN_TITLE.search(str(fp.get("title", "")))
+             or any("WWW-Authenticate" in str(x)
+                    for x in (fp.get("layers") or {}).get("status", [])))
+    ):
+        return "medium", "web-plain-http", "HTTP management interface without TLS on the LAN"
+    return None
 
 
 def fix_for(tag: str) -> str:
@@ -479,6 +526,7 @@ class Session:
         self.quit: bool = False
         self.last_hosts: list[HostRecord] = []
         self.last_udp: dict[str, list[UdpResult]] = {}
+        self.last_fingerprints: dict[str, dict] = {}   # "ip:port" -> fingerprint dict
         self.profile_name: str = ""
 
     # ---------- dynamic prompt ----------
@@ -954,7 +1002,23 @@ def scan_ports(session: Session, target: str, port_list: list[int]) -> dict[str,
     return results
 
 
-def print_ports_table(ansi: Ansi, results: dict[str, list[PortResult]]) -> None:
+def _fingerprint_banner(ansi: Ansi, ip: str, port: int, fps: dict) -> str:
+    """v2.0: when the endpoint was fingerprinted, show 'service [conf%]' in the
+    BANNER column instead of the raw TCP grab."""
+    fp = fps.get(f"{ip}:{port}")
+    if not isinstance(fp, dict) or fp.get("error"):
+        return ""
+    svc = fp.get("service") or "http"
+    conf = fp.get("confidence_score", 0)
+    text = f"{svc} [{conf}%]"
+    title = str(fp.get("title") or "").strip()
+    if title:
+        text += f" · {title[:24]}"
+    color = ansi.b_green if conf >= 60 else (ansi.yellow if conf >= 30 else ansi.gray)
+    return f"{color}{text}{ansi.reset}"
+
+
+def print_ports_table(ansi: Ansi, results: dict[str, list[PortResult]], fingerprints: dict | None = None) -> None:
     if not results:
         warn(ansi, "no port results in memory — run 'ports' first")
         return
@@ -963,6 +1027,7 @@ def print_ports_table(ansi: Ansi, results: dict[str, list[PortResult]]) -> None:
     print(f"  {ansi.bold}{'HOST':<17} {'PORT/PROTO':<12} {'SERVICE':<16} {'RISK':<16} {'BANNER'}{ansi.reset}")
     print(f"  {ansi.gray}{RULE}{ansi.reset}")
     any_open = False
+    fps = fingerprints or {}
     for ip, ports in sorted(results.items(), key=lambda kv: ipaddress.ip_address(kv[0])):
         if not ports:
             continue
@@ -975,11 +1040,17 @@ def print_ports_table(ansi: Ansi, results: dict[str, list[PortResult]]) -> None:
                 risk = f"{ansi.yellow}[warn:{p.risk}]{ansi.reset}"
             else:
                 risk = f"{ansi.gray}-{ansi.reset}"
+            fp_banner = _fingerprint_banner(ansi, ip, p.port, fps)
+            banner_cell = fp_banner or (f"{ansi.gray}{banner}{ansi.reset}" if banner else "")
             print(f"  {ip:<17} {str(p.port) + '/tcp':<12} {p.service:<16} {risk:<16} "
-                  f"{ansi.gray}{banner}{ansi.reset}")
+                  f"{banner_cell}")
     if not any_open:
         warn(ansi, "no open ports in the last audit")
     print(f"  {ansi.gray}{RULE}{ansi.reset}\n")
+    if any(p.state == "open" and (p.port in HTTP_FP_PORTS or "http" in p.service.lower())
+           for ports in results.values() for p in ports):
+        hint = f"next step: 'fingerprint' to identify the HTTP services (async v2.0 engine)"
+        print(f"  {ansi.gray}[·] {hint}{ansi.reset}\n")
 
 
 # ============================================================
@@ -1323,7 +1394,118 @@ def cmd_ports(session: Session, args: list[str]) -> None:
         session.target = target
     results = scan_ports(session, target, port_list)
     session.last_results = results
-    print_ports_table(a, results)
+    print_ports_table(a, results, fingerprints=getattr(session, "last_fingerprints", {}))
+
+
+# ---------------------------------------------------------------------------
+#  HTTP fingerprinting (NetSpectre v2.0 engine, lazy import so the v1 REPL
+#  keeps working when aiohttp is not installed)
+# ---------------------------------------------------------------------------
+
+HTTP_FP_PORTS = (80, 443, 8080, 8443, 81, 8000, 8008, 8081, 8888, 9000)
+FP_DISCOVERY_PORTS = (80, 443, 8080)   # probed on 'hosts' output when no port audit exists
+FP_DEFAULT_TIMEOUT = 4.0
+FP_MAX_TARGETS = 200
+
+
+def _get_fingerprinter_class():
+    """Import the async fingerprinter class; (None, err) when aiohttp missing."""
+    try:
+        from http_fingerprinter import HTTPFingerprinter
+    except ImportError as exc:
+        return None, str(exc)
+    return HTTPFingerprinter, ""
+
+
+def cmd_fingerprint(session: Session, args: list[str]) -> None:
+    a = session.ansi
+    fp_cls, import_err = _get_fingerprinter_class()
+    if fp_cls is None:
+        error(a, f"aiohttp is not installed — pip install aiohttp ({import_err})")
+        return
+
+    # ---- target selection -------------------------------------------------
+    targets: list[tuple[str, int]] = []
+    if args:
+        tgt = args[0]
+        if validate_target(a, tgt) is None:
+            return
+        port_arg = args[1] if len(args) > 1 else ""
+        if port_arg:
+            try:
+                plist = parse_ports(port_arg)
+            except ValueError as exc:
+                error(a, str(exc))
+                return
+        else:
+            plist = [p for p in parse_ports(session.port_range) if p in HTTP_FP_PORTS]
+        # expand a CIDR the same way 'ports' does
+        if "/" in tgt:
+            nets = ipaddress.ip_network(tgt, strict=False)
+            hosts = [str(h) for h in nets.hosts()]
+            if session.last_hosts:
+                known = {h.ip for h in session.last_hosts if h.alive}
+                hosts = [h for h in hosts if h in known]
+        else:
+            hosts = [tgt]
+        targets = [(h, p) for h in hosts for p in plist][:FP_MAX_TARGETS]
+    else:
+        # default 1: every open HTTP-ish port found by the last TCP audit
+        for ip, ports in getattr(session, "last_results", {}).items():
+            for p in ports:
+                if p.state == "open" and (p.port in HTTP_FP_PORTS or "http" in p.service.lower()):
+                    targets.append((ip, p.port))
+        # default 2 (fallback): hosts discovered with 'hosts' but never port-scanned —
+        # probe the common web ports directly
+        if not targets and getattr(session, "last_hosts", []):
+            alive = [h.ip for h in session.last_hosts if h.alive]
+            if alive:
+                info(a, f"no port audit in memory — probing web ports {FP_DISCOVERY_PORTS} "
+                        f"on {len(alive)} discovered host(s)")
+                targets = [(h, p) for h in alive for p in FP_DISCOVERY_PORTS]
+        if not targets:
+            error(a, "no hosts or open HTTP ports in memory — run 'hosts' or 'ports' first, "
+                     "or use: fingerprint <cidr|ip> [range]")
+            return
+        targets = targets[:FP_MAX_TARGETS]
+
+    info(a, f"fingerprinting {len(targets)} HTTP endpoint(s) asynchronously…")
+    fp = fp_cls(timeout=FP_DEFAULT_TIMEOUT, overall_timeout=FP_DEFAULT_TIMEOUT * 4)
+    try:
+        results = asyncio.run(fp.fingerprint_many(targets))
+    except RuntimeError:
+        # an event loop is already running (embedding context): use a worker thread
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+            results = ex.submit(asyncio.run, fp.fingerprint_many(targets)).result()
+
+    # ---- store + render ----------------------------------------------------
+    ok_n = 0
+    for r in results:
+        session.last_fingerprints[f"{r.target}:{r.port}"] = r.as_dict()
+        if not r.error:
+            ok_n += 1
+
+    print(box_title(a, "http fingerprints"))
+    print(f"  {a.bold}{'TARGET':<17} {'PORT':<6} {'SERVICE':<30} {'SERVER / ERROR'}{a.reset}")
+    for r in sorted(results, key=lambda x: (x.target, x.port)):
+        if r.error:
+            print(f"  {r.target:<17} {r.port:<6} {a.red}{'— error —':<30}{a.reset} {a.gray}{_trim_fp(r.error)}{a.reset}")
+            continue
+        svc = f"{r.service} [{r.confidence_score}%]"
+        color = a.green if r.confidence_score >= 60 else (a.yellow if r.confidence_score >= 30 else a.gray)
+        extra = " · ".join(f"{k}={v}" for k, v in list(r.extra_info.items())[:2])
+        server = r.server_header or ""
+        title = f" · {r.title}" if r.title else ""
+        print(f"  {r.target:<17} {r.port:<6} {color}{svc:<30}{a.reset} {a.gray}{_trim_fp(server)}{a.reset}{title}")
+        if extra:
+            print(f"  {'':<24} {a.gray}↳ {extra}{a.reset}")
+    print()
+    ok(a, f"{ok_n}/{len(results)} endpoint(s) fingerprinted — stored in session (use 'save' to export)")
+
+
+def _trim_fp(s: str, n: int = 46) -> str:
+    return s if len(s) <= n else s[: n - 3] + "..."
 
 
 def evaluate_risk_gate(session: Session) -> list[str]:
@@ -1342,7 +1524,8 @@ def evaluate_risk_gate(session: Session) -> list[str]:
 
 
 def collect_findings(session: Session) -> list[dict]:
-    """Risk findings from the last TCP + UDP audits, sorted: high → medium, then IP/port."""
+    """Risk findings from the last TCP + UDP audits + HTTP fingerprints, sorted:
+    high → medium, then IP/port."""
     rows: list[dict] = []
     for ip, ports in getattr(session, "last_results", {}).items():
         for p in ports:
@@ -1359,7 +1542,17 @@ def collect_findings(session: Session) -> list[dict]:
                              "service": r.service, "level": r.risk_level, "tag": r.risk,
                              "detail": r.response,
                              "reason": UDP_RISK[r.port][2] if r.port in UDP_RISK else "",
-                             "fix": REMEDIATIONS.get(r.risk, "")})
+                             "fix": REMEDIATIONS.get(r.risk, "")})    # ---- v2.0: findings derived from HTTP fingerprints (web admin panels) ----
+    for key, fp in getattr(session, "last_fingerprints", {}).items():
+        hit = match_web_finding(fp if isinstance(fp, dict) else {})
+        if hit:
+            level, tag, reason = hit
+            ip, port = key.rsplit(":", 1)
+            rows.append({"ip": ip, "port": int(port), "proto": "tcp",
+                         "service": fp.get("service", "http"), "level": level, "tag": tag,
+                         "detail": fp.get("title") or fp.get("server_header") or "",
+                         "reason": reason,
+                         "fix": REMEDIATIONS.get(tag, "")})
     rows.sort(key=lambda x: (0 if x["level"] == "high" else 1,
                              ipaddress.ip_address(x["ip"]), x["port"]))
     return rows
@@ -1785,6 +1978,9 @@ def cmd_status(session: Session, args: list[str]) -> None:
     open_ports = sum(len(p) for p in last_results.values())
     high_n = sum(1 for lst in last_results.values() for p in lst if p.risk_level == "high")
     med_n = sum(1 for lst in last_results.values() for p in lst if p.risk_level == "medium")
+    web_rows = [f for f in collect_findings(session) if str(f.get("tag", "")).startswith("web-")]
+    high_n += sum(1 for f in web_rows if f["level"] == "high")
+    med_n += sum(1 for f in web_rows if f["level"] == "medium")
     print()
     print(box_title(a, "session status"))
     rows = [
@@ -1795,6 +1991,7 @@ def cmd_status(session: Session, args: list[str]) -> None:
             ("ping_sweep", "on" if session.ping_sweep else "off"),
         ("last scan", f"{hosts} live host(s) in memory"),
         ("last audit", f"{open_ports} open port(s) in memory"),
+        ("last fingerprints", f"{len(getattr(session, 'last_fingerprints', {}))} HTTP endpoint(s) in memory"),
         ("profile", session.profile_name or "(none)"),
             ("last udp", f"{sum(len(v) for v in session.last_udp.values())} responsive UDP port(s) in memory"),
         ("risk found", f"{high_n} high · {med_n} medium"),
@@ -1828,7 +2025,8 @@ def build_report(session: Session) -> dict:
     """Assemble the full JSON report document (shared by 'save' and --json)."""
     results = getattr(session, "last_results", {})
     udp_results = getattr(session, "last_udp", {})
-    findings = [
+    findings = collect_findings(session)
+    tcp_findings = [
         {
             "ip": ip, "port": p.port, "service": p.service, "proto": "tcp",
             "level": p.risk_level, "tag": p.risk,
@@ -1853,6 +2051,7 @@ def build_report(session: Session) -> dict:
         "hosts": [h.to_dict() for h in session.last_hosts],
         "open_ports": {ip: [p.__dict__ for p in ports] for ip, ports in results.items()},
         "udp": {ip: [r.__dict__ for r in lst] for ip, lst in udp_results.items()},
+        "fingerprints": dict(getattr(session, "last_fingerprints", {})),
         "risk_summary": {
             "high": sum(1 for f in findings if f["level"] == "high"),
             "medium": sum(1 for f in findings if f["level"] == "medium"),
@@ -1867,8 +2066,9 @@ def cmd_save(session: Session, args: list[str]) -> None:
     hosts = session.last_hosts
     results = getattr(session, "last_results", {})
     udp_results = getattr(session, "last_udp", {})
-    if not hosts and not results and not udp_results:
-        warn(a, "nothing to save yet — run 'hosts', 'ports' or 'udp' first")
+    fps = getattr(session, "last_fingerprints", {})
+    if not hosts and not results and not udp_results and not fps:
+        warn(a, "nothing to save yet — run 'hosts', 'ports', 'udp' or 'fingerprint' first")
         return
     report = build_report(session)
     try:
@@ -1917,6 +2117,7 @@ def _register() -> None:
     add("hosts", "discover active hosts on a subnet or single IP", "hosts [cidr|ip]", cmd_hosts, ("scan", "sweep"), "discovery")
     add("ports", "audit open TCP ports (optional range)", "ports [cidr|ip] [top100|all|spec]", cmd_ports, ("portscan", "audit"), "discovery")
     add("udp", "audit common UDP service ports (optional range)", "udp [cidr|ip] [top|all|spec]", cmd_udp, ("udpscan",), "discovery")
+    add("fingerprint", "identify HTTP services (async multi-layer engine)", "fingerprint [cidr|ip] [range]", cmd_fingerprint, ("fp", "fingerprint"), "discovery")
     add("risks", "risk findings table + md/csv export for ticketing", "risks [all|high|medium] | md|csv [filter] [file]", cmd_risks, ("risk", "vulns"), "discovery")
     add("osint", "local intel: host, egress route and ARP cache", "osint", cmd_osint, ("arp",), "discovery")
     add("set", "view or change session options", "set [option] [value]", cmd_set, ("config",), "config")

@@ -1,5 +1,9 @@
 # NetSpectre
 
+> **v2.0** — nuevo motor de fingerprinting HTTP asíncrono (`fingerprint`),
+> hallazgos de riesgo desde paneles web expuestos y empaquetado pip.
+> El núcleo sigue siendo 100 % librería estándar.
+
 ```text
    _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
   | \ | |  / \|_   _|_   _/ ___||_   _| / ___/ _ \|  _ \| ____|
@@ -14,8 +18,8 @@ interactivo en bucle (estilo Metasploit/Aircrack-ng), estética ANSI y motor
 
 | | |
 |---|---|
-| 🐍 Requisitos | Python 3.8+ (probado en 3.13) — solo librería estándar |
-| 📦 Instalación | Cero dependencias: clona y ejecuta |
+| 🐍 Requisitos | Python 3.11+ (probado en 3.13) — solo librería estándar |
+| 📦 Instalación | Cero dependencias: clona y ejecuta (`pip install -r requirements.txt` solo para fingerprinting) |
 | 🖥️ Plataformas | Linux · macOS · Windows |
 | 🎨 Interfaz | REPL con colores ANSI, banners y prompt contextual |
 | 🔍 Motor | Sondeo TCP connect, ICMP raw opcional, caché ARP/OUI |
@@ -54,7 +58,29 @@ python3 netspectre.py
 > **Nota:** en la mayoría de sistemas Linux/macOS modernos el binario se llama
 > `python3` (no `python`). En Windows funciona `python netspectre.py`.
 
-No hay `pip install`, ni `requirements.txt`, ni pasos de build.
+**Todo el núcleo funciona sin instalar nada**: descubrimiento de hosts,
+auditoría de puertos TCP/UDP, informe de riesgos y export JSON usan únicamente
+la librería estándar.
+
+### Dependencia opcional: fingerprinting HTTP
+
+El comando `fingerprint` usa el motor async de `http_fingerprinter.py`, que
+depende de [`aiohttp`](https://docs.aiohttp.org/). Instálalo con:
+
+```bash
+pip install -r requirements.txt
+# o solo la dependencia:
+pip install aiohttp
+```
+
+- En Debian/Ubuntu con PEP 668 puede hacer falta `pip install --user --break-system-packages aiohttp`, o mejor crear un venv:
+  ```bash
+  python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+  ```
+- Sin `aiohttp`, el resto de NetSpectre funciona igual y `fingerprint`
+  responde con un aviso limpio: `aiohttp is not installed — pip install aiohttp`.
+- Requisito de Python: 3.11+ (el motor usa `asyncio.TaskGroup`). El resto de la
+  herramienta funciona en 3.8+, pero se recomienda la misma versión para todo.
 
 ---
 
@@ -110,6 +136,7 @@ python3 netspectre.py -t 10.0.0.0/24 --plain
 | `hosts [cidr\|ip]` | `scan`, `sweep` | Descubre hosts activos (sondeo TCP; ICMP opcional) |
 | `ports [cidr\|ip] [rango]` | `portscan`, `audit` | Audita puertos TCP abiertos + banners |
 | `udp [cidr\|ip] [rango]` | `udpscan` | Audita puertos UDP con sondas por servicio (DNS, NTP, SNMP…) |
+| `fingerprint [cidr\|ip] [rango]` | `fp` | Identifica servicios HTTP con el motor async v2.0 (confianza 0-100%) |
 | `risks [all\|high\|medium]` | `risk`, `vulns` | Hallazgos de riesgo de la última auditoría, por severidad |
 | `risks md\|csv [filtro] [fichero]` | | Exporta los hallazgos a Markdown o CSV para ticketing |
 | `osint` | `arp` | Intel local: hostname, IP de salida y caché ARP con fabricante |
@@ -179,6 +206,44 @@ set udp_workers 64         # hilos del barrido UDP
 
 Sondas incluidas: DNS/mDNS (query A), NTP (modo cliente), SNMPv2c `sysDescr.0`
 (con comunidad `public`), NetBIOS node-status (RFC 1002) y SSDP `M-SEARCH`.
+
+### 🔎 Fingerprinting HTTP (`fingerprint`)
+
+Motor asíncrono de NetSpectre v2.0 (`http_fingerprinter.py`, basado en
+`asyncio` + `aiohttp`) que identifica el software que hay detrás de cada
+servicio web detectado por `ports`. Requiere instalar la dependencia opcional
+(`pip install -r requirements.txt`); sin ella, el resto de la herramienta
+funciona igual y el comando avisa con un error limpio.
+
+```text
+ports 192.168.1.0/24        # primero el auditório TCP
+fingerprint                 # huella de todos los puertos HTTP abiertos en memoria
+fingerprint 192.168.1.1     # objetivo directo (usa el rango de sesión filtrado a HTTP)
+fingerprint 192.168.1.1 80,8080
+```
+
+Salida de ejemplo:
+
+```text
+┌─────────────────────────── HTTP FINGERPRINTS ───────────────────────────┐
+  TARGET            PORT   SERVICE                        SERVER / ERROR
+  192.168.1.1       80     nginx [73%]                    nginx/1.2.2 · MiRouter
+  [✓] 1/1 endpoint(s) fingerprinted — stored in session (use 'save' to export)
+```
+
+La **confianza (0-100%)** se calcula sumando tres capas ponderadas con tope:
+
+| Capa | Peso máx. | Qué mira |
+|---|---|---|
+| Cabeceras | 45 | `Server`, `Set-Cookie` (PHPSESSID, sysauth/LuCI, JSESSIONID…), `X-Powered-By`, `WWW-Authenticate` |
+| HTML | 40 | variables JS (`G_FEATURES`), endpoints (`/cgi-bin/luci/`, `/HNAP1/`, `/ISAPI/`), `<meta generator>`, título |
+| Estado/rutas | 15 | códigos 200/302/401/403 y respuestas a rutas firma (`/webfig/`, `/webman/index.cgi`…) |
+
+Cada petición sigue redirecciones (hasta 5, registradas en el resultado), aplica
+timeout por petición y un tope global por objetivo, y captura errores TLS/SSL
+sin romper el barrido. Los metadatos expuestos (MAC, modelo, serial, firmware)
+se extraen del HTML al campo `extra_info`. Los resultados quedan en memoria y
+se exportan con `save` bajo la clave `fingerprints` del informe JSON.
 
 ### 💾 Perfiles de sesión (`profile`)
 
@@ -397,8 +462,13 @@ paquetes (estados `filtered`).
 ## 📂 Estructura del proyecto
 
 ```text
-netspectre.py   # la herramienta completa (solo librería estándar)
-demo.html       # demo web interactiva del REPL (motor simulado, sin paquetes reales)
+netspectre.py          # la herramienta completa (solo librería estándar)
+http_fingerprinter.py  # motor async de fingerprinting HTTP (v2.0, requiere aiohttp)
+requirements.txt       # dependencia opcional para el fingerprinting
+pyproject.toml         # empaquetado pip/pipx (extra opcional [fingerprint])
+index.html             # demo web interactiva del REPL (motor simulado, sin paquetes reales)
+guide.html             # guía visual de comandos
+.github/workflows/     # CI: pruebas con y sin aiohttp (Python 3.11/3.13)
 README.md
 ```
 

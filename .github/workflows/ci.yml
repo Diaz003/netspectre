@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: core (py${{ matrix.python }}) — stdlib only
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile all modules
+        run: python -m py_compile netspectre.py
+
+      - name: Version banner matches pyproject
+        run: |
+          python - <<'EOF'
+          import netspectre, tomllib, pathlib
+          want = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          assert netspectre.__version__ == want, f"{netspectre.__version__} != {want}"
+          print(f"version OK: {want}")
+          EOF
+
+      - name: Help + status smoke test (no aiohttp installed in this job)
+        run: |
+          python netspectre.py --version
+          python netspectre.py --help > /dev/null
+          printf 'status\nexit\n' | python netspectre.py --no-color | grep -q "session status"
+
+      - name: fingerprint degrades cleanly without aiohttp
+        run: |
+          OUT=$(printf 'fingerprint\nexit\n' | python netspectre.py --no-color)
+          echo "$OUT" | grep -q "aiohttp is not installed"
+
+  fingerprint-engine:
+    name: fingerprint engine (py${{ matrix.python }}) — with aiohttp
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install package with the fingerprint extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[fingerprint]"
+
+      - name: Compile engine + score sanity (weights sum to 100)
+        run: |
+          python -m py_compile http_fingerprinter.py netspectre.py
+          python - <<'EOF'
+          from http_fingerprinter import HTTPFingerprinter, HTTPFingerprint, W_HEADERS, W_BODY, W_STATUS
+          assert W_HEADERS + W_BODY + W_STATUS == 100
+
+          fp = HTTPFingerprinter()
+          r = HTTPFingerprint(target="10.0.0.9", port=80, scheme="http")
+          body = """
+          <html><head><title>Router Admin</title></head><body>
+          <script>var G_FEATURES = {"ipv6":1};</script>
+          <a href="/cgi-bin/luci/">login</a>
+          MAC: AA:BB:CC:DD:EE:FF, Model: RT-AX55, Firmware: 3.0.0.4.386
+          </body></html>"""
+          fp._score_body(r, body)
+          fp._finalize(r)
+          assert r.confidence_score == 40, r.confidence_score
+          assert r.extra_info["mac_addresses"] == ["AA:BB:CC:DD:EE:FF"]
+          assert "model" in r.extra_info and "firmware" in r.extra_info
+          print("scoring engine OK:", r.service, r.confidence_score)
+          EOF
+
+      - name: REPL fingerprint command available with aiohttp present
+        run: |
+          printf 'fingerprint 127.0.0.1 1\nexit\n' | python netspectre.py --no-color | grep -qE "fingerprinting|HTTP FINGERPRINTS|error"

@@ -66,7 +66,7 @@
   |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
 </pre>
     <h1>NETSPECTRE</h1>
-    <div class="sub">v1.0.0 — interactive local network auditing toolkit · terminal REPL demo</div>
+    <div class="sub">v2.0.0 — interactive local network auditing toolkit · terminal REPL demo</div>
     <div class="badges">
       <span class="badge sim">⚠ motor simulado: sin paquetes reales</span>
       <span class="badge ansi">estética ANSI estilo Metasploit/Aircrack</span>
@@ -95,6 +95,7 @@
     <button class="chip" data-c="ports">ports</button>
     <button class="chip" data-c="ports 22,80,443">ports 22,80,443</button>
     <button class="chip" data-c="udp">udp</button>
+    <button class="chip" data-c="fingerprint">fingerprint</button>
     <button class="chip" data-c="risks">risks</button>
     <button class="chip" data-c="osint">osint</button>
     <button class="chip" data-c="profile list">profile list</button>
@@ -148,7 +149,7 @@ const C = {
 };
 
 // ---------- motor simulado ----------
-const state = { target: null, portRange: "top100", lastHosts: [], lastResults: {}, lastUdp: {}, start: Date.now(),
+const state = { target: null, portRange: "top100", lastHosts: [], lastResults: {}, lastUdp: {}, lastFingerprints: {}, start: Date.now(),
   hostTimeout: 0.5, portTimeout: 1.0, workers: 128, portWorkers: 256, udpTimeout: 2.0, udpWorkers: 128, pingSweep: false, ipsScanned: 0, portsTested: 0,
   profile: null };
 
@@ -234,16 +235,24 @@ const NETS = {
   "192.168.1.0/24": [
     { ip: "192.168.1.1",   host: "router.local",  mac: "F8:66:C2:11:22:33", vendor: "TP-Link",
       ports: [[53, "domain", ""], [80, "http", "HTTP/1.1 200 OK (Server: TP-LINK Httpd)"], [443, "https", "(tls)"], [8080, "http-proxy", ""]],
-      udps: [[53, "domain", "dns-response"], [123, "ntp", ""], [137, "netbios-ns", "netbios-response"]] },
+      udps: [[53, "domain", "dns-response"], [123, "ntp", ""], [137, "netbios-ns", "netbios-response"]],
+      fps: { "80":  { scheme: "http",  service: "TP-Link httpd", conf: 81, server: "TP-LINK Httpd/1.1", title: "TP-Link Router" },
+             "443": { scheme: "https", service: "TP-Link httpd", conf: 74, server: "TP-LINK Httpd/1.1", title: "TP-Link Router" },
+             "8080":{ scheme: "http",  service: "TP-Link httpd", conf: 66, server: "TP-LINK Httpd/1.1", title: "TP-Link Router" } } },
     { ip: "192.168.1.42",  host: "kali-box.local", mac: "AC:DE:48:AA:BB:CC", vendor: "Apple",
-      ports: [[22, "ssh", "SSH-2.0-OpenSSH_9.6p1"], [80, "http", "HTTP/1.1 200 OK (Server: nginx/1.24.0)"]] },
+      ports: [[22, "ssh", "SSH-2.0-OpenSSH_9.6p1"], [80, "http", "HTTP/1.1 200 OK (Server: nginx/1.24.0)"]],
+      fps: { "80": { scheme: "http", service: "nginx", conf: 45, server: "nginx/1.24.0", title: "Welcome to nginx!" } } },
     { ip: "192.168.1.77",  host: "raspberrypi.local", mac: "DC:A6:32:DE:AD:01", vendor: "Raspberry Pi",
       ports: [[22, "ssh", "SSH-2.0-OpenSSH_9.2p1"], [445, "microsoft-ds", ""], [8000, "http-alt", "HTTP/1.1 200 OK (Server: Python/3.11)"], [5900, "vnc", "RFB 003.008"]],
-      udps: [[5353, "mdns", "mdns-response (2 answer(s))"]] },
+      udps: [[5353, "mdns", "mdns-response (2 answer(s))"]],
+      fps: { "8000": { scheme: "http", service: "Python http.server", conf: 38, server: "Python/3.11 SimpleHTTP", title: "Directory listing" } } },
     { ip: "192.168.1.101", host: "printer.local", mac: "00:17:88:5E:C0:DE", vendor: "Signify (Philips Hue)",
-      ports: [[80, "http", "HTTP/1.1 200 OK (Server: Boa/0.94)"], [631, "ipp", ""]] },
+      ports: [[80, "http", "HTTP/1.1 200 OK (Server: Boa/0.94)"], [631, "ipp", ""]],
+      fps: { "80": { scheme: "http", service: "Boa httpd (printer panel)", conf: 70, server: "Boa/0.94", title: "Printer Admin" } } },
     { ip: "192.168.1.150", host: "nas.local", mac: "00:E0:4C:0F:F1:CE", vendor: "Realtek",
-      ports: [[139, "netbios-ssn", ""], [445, "microsoft-ds", ""], [443, "https", "(tls)"], [5000, "upnp", "HTTP/1.1 200 OK (Server: Synology)"], [5001, "unknown", ""]] },
+      ports: [[139, "netbios-ssn", ""], [445, "microsoft-ds", ""], [443, "https", "(tls)"], [5000, "upnp", "HTTP/1.1 200 OK (Server: Synology)"], [5001, "unknown", ""]],
+      fps: { "443": { scheme: "https", service: "Synology DSM", conf: 88, server: "Synology/7.1", title: "Synology DiskStation" },
+             "5000":{ scheme: "http",  service: "Synology DSM", conf: 84, server: "Synology/7.1", title: "DSM login" } } },
   ],
 };
 function hostsOf(cidr) {
@@ -351,7 +360,7 @@ const BANNER =
   |_| \\_/_/   \\_\\_|   |_| |____/  |_|   \\____\\___/|_| \\_\\_____|`;
 function drawBanner() {
   echo(COLORS.cyan(BANNER));
-  echo(`        ${COLORS.bold(COLORS.mag("NetSpectre"))} ${COLORS.gray("v1.0.0")}  ${COLORS.dim("~")}  ${COLORS.gray("local network auditing toolkit")}`);
+  echo(`        ${COLORS.bold(COLORS.mag("NetSpectre"))} ${COLORS.gray("v2.0.0")}  ${COLORS.dim("~")}  ${COLORS.gray("local network auditing toolkit")}`);
   blank();
   echo(`  ${warn} ${COLORS.yellow("Authorized-use only: audit networks you own or are permitted to test.")}`);
   blank();
@@ -378,6 +387,7 @@ async function cmdHelp(args) {
   echo(`    ${COLORS.b_cyan("hosts")}       descubre hosts activos en una subred${COLORS.gray(" (scan, sweep)")}`);
   echo(`    ${COLORS.b_cyan("ports")}       audita puertos TCP abiertos${COLORS.gray(" (portscan, audit)")}`);
   echo(`    ${COLORS.b_cyan("udp")}         audita puertos de servicio UDP comunes${COLORS.gray(" (udpscan)")}`);
+  echo(`    ${COLORS.b_cyan("fingerprint")} identifica servicios HTTP (motor async v2.0)${COLORS.gray(" (fp)")}`);
   echo(`    ${COLORS.b_cyan("risks")}      hallazgos de riesgo de la última auditoría${COLORS.gray(" (risk, vulns)")}`);
   echo(`    ${COLORS.b_cyan("osint")}       intel local: host, ruta de salida y caché ARP${COLORS.gray(" (arp)")}`);
   echo(`  ${COLORS.bold(COLORS.b_blue("CONFIGURATION"))}`);
@@ -517,6 +527,65 @@ async function cmdPorts(args) {
   for (const f of found) {
     (state.lastResults[f.ip] = state.lastResults[f.ip] || []).push({ port: f.port, service: f.svc, banner: f.banner, risk: f.risk, risk_level: f.level });
   }
+  for (const ip of Object.keys(state.lastResults)) {
+    const h = table.find(x => x.ip === ip);
+    if (h && h.fps) {
+      for (const p of state.lastResults[ip])
+        if (h.fps[String(p.port)]) state.lastFingerprints[`${ip}:${p.port}`] = h.fps[String(p.port)];
+    }
+  }
+}
+
+// v2.0: fingerprint HTTP simulado (mismas capas que el motor real)
+async function cmdFingerprint(args) {
+  let target = "", rangeArg = "";
+  for (const a of args) {
+    if (!target && !looksLikePortSpec(a)) target = a;
+    else if (!rangeArg) rangeArg = a;
+  }
+  if (!target) target = state.target;
+  if (!target) { echo(`  ${err} sin objetivo — usa: fingerprint <cidr|ip> [rango]`); return; }
+  const table = hostsOf(target);
+  if (!table) {
+    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
+    return;
+  }
+  let pairs = [];
+  const openHttp = [];
+  for (const [ip, ports] of Object.entries(state.lastResults))
+    for (const p of ports)
+      if (p.service.toLowerCase().includes("http") || [80, 443, 8080, 8443, 81, 8000, 8008, 8081, 8888, 9000].includes(p.port))
+        openHttp.push([ip, p.port]);
+  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
+  if (openHttp.length) {
+    pairs = openHttp;
+  } else {
+    const ips = target.includes("/") ? state.lastHosts.map(h => h.ip) : table.map(h => h.ip);
+    echo(`  ${warn} no hay auditoría de puertos en memoria — sondeando puertos web (80, 443, 8080) en ${ips.length} host(s) descubierto(s)`);
+    pairs = ips.flatMap(ip => [[ip, 80], [ip, 443], [ip, 8080]]);
+  }
+  pairs = pairs.slice(0, 200);
+  blank();
+  echo(`  ${plus} huellando ${pairs.length} endpoint(s) HTTP asíncronamente (motor v2.0)…`);
+  blank();
+  const rows = [];
+  for (const [ip, port] of pairs) {
+    const h = table.find(x => x.ip === ip);
+    const fp = h && h.fps ? h.fps[String(port)] : null;
+    if (fp) {
+      rows.push({ ip, port, ...fp });
+      state.lastFingerprints[`${ip}:${port}`] = fp;
+      const col = fp.conf >= 60 ? COLORS.b_green : (fp.conf >= 30 ? COLORS.yellow : COLORS.gray);
+      echo(`  ${okk} ${ip.padEnd(16)} ${String(port).padEnd(7)} ${col(`${fp.service} [${fp.conf}%]`.padEnd(30))} ${COLORS.gray(fp.server)}${fp.title ? " · " + fp.title : ""}`);
+    } else {
+      echo(`  ${err} ${ip.padEnd(16)} ${String(port).padEnd(7)} ${"— error —".padEnd(30)} ${COLORS.gray("sin respuesta HTTP (cerrado o no-web)")}`);
+    }
+    await sleep(160);
+  }
+  blank();
+  echo(`  ${okk} ${rows.length}/${pairs.length} endpoint(s) huellado(s) — en memoria (exporta con 'save')`);
+  echo(COLORS.gray("  [·] confianza = cabeceras (45) + HTML (40) + estado/rutas (15); 'risks' ahora marca paneles admin expuestos"));
+  blank();
 }
 
 function collectFindings() {
@@ -525,6 +594,21 @@ function collectFindings() {
     for (const p of ports)
       if (p.risk_level)
         rows.push({ ip, port: p.port, proto: "tcp", service: p.service, level: p.risk_level, tag: p.risk, detail: p.banner });
+  // v2.0: hallazgos desde fingerprints (paneles admin expuestos)
+  for (const [key, fp] of Object.entries(state.lastFingerprints)) {
+    if (!fp || fp.error) continue;
+    const blob = `${fp.service || ""} ${fp.title || ""}`;
+    let hit = null;
+    if (/hnap|d-link/i.test(blob)) hit = ["high", "web-hnap", "interfaz HNAP expuesta: vectores de takeover sin auth"];
+    else if (/luci|openwrt/i.test(blob)) hit = ["medium", "web-luci", "panel de administración LuCI (OpenWrt) expuesto en la LAN"];
+    else if (/webfig|routeros|mikrotik/i.test(blob)) hit = ["medium", "web-webfig", "interfaz WebFig/RouterOS expuesta en la LAN"];
+    else if (fp.scheme === "http" && /admin|router|gateway|login|management|panel/i.test(fp.title || ""))
+      hit = ["medium", "web-plain-http", "interfaz de gestión HTTP sin TLS en la LAN"];
+    if (hit) {
+      const [ip, port] = key.rsplit(":", 1);
+      rows.push({ ip, port: +port, proto: "tcp", service: fp.service || "http", level: hit[0], tag: hit[1], detail: hit[2] });
+    }
+  }
   for (const [ip, lst] of Object.entries(state.lastUdp))
     for (const r of lst)
       if (r.risk_level)
@@ -549,6 +633,10 @@ const FIXES = {
   syslog: "transporte TLS, rate-limit, valida emisores", ssdp: "filtra multicast 239.255.255.250:1900",
   sip: "SIPS/TLS, fail2ban en registros", tftp: "desactiva salvo necesidad; chroot read-only",
   ftp: "reemplaza por SFTP/FTPS; sin anónimo",
+  "web-luci": "LuCI solo en la LAN, fuerza HTTPS, contraseña root fuerte",
+  "web-webfig": "WebFig en VLAN de gestión, RouterOS parcheado",
+  "web-hnap": "desactiva HNAP/gestión remota; actualiza firmware",
+  "web-plain-http": "sirve el panel por HTTPS + auth, VLAN de gestión",
 };
 
 async function cmdRisks(args) {
@@ -576,6 +664,10 @@ async function cmdRisks(args) {
     snmp: "comunidades por defecto filtran config", syslog: "logs sin cifrar",
     ssdp: "superficie de control UPnP", nfs: "exports montables por cualquiera",
     sip: "enumeración y abuso de registro", ntp: "amplificación si está mal configurado",
+    "web-luci": "panel de administración LuCI (OpenWrt) expuesto",
+    "web-webfig": "interfaz WebFig/RouterOS expuesta",
+    "web-hnap": "interfaz HNAP expuesta: takeover sin auth",
+    "web-plain-http": "interfaz de gestión HTTP sin TLS",
   };
   for (const f of findings) {
     const sev = f.level === "high" ? COLORS.b_red("HIGH") : COLORS.yellow("MED");
@@ -725,6 +817,7 @@ async function run(line) {
       else if (name === "hosts" || name === "scan" || name === "sweep") await cmdHosts(args);
       else if (name === "ports" || name === "portscan" || name === "audit") await cmdPorts(args);
       else if (name === "udp" || name === "udpscan") await cmdUdp(args);
+      else if (name === "fingerprint" || name === "fp") await cmdFingerprint(args);
       else if (name === "risks" || name === "risk" || name === "vulns") await cmdRisks(args);
       else if (name === "osint" || name === "arp") await cmdOsint();
       else if (name === "status" || name === "st" || name === "info") await cmdStatus();
@@ -744,7 +837,7 @@ async function run(line) {
 async function autoDemo() {
   if (busy) return;
   out.innerHTML = "";
-  for (const c of ["help", "set target 192.168.1.0/24", "hosts", "ports", "udp", "risks", "osint", "status"]) {
+  for (const c of ["help", "set target 192.168.1.0/24", "hosts", "ports", "fingerprint", "udp", "risks", "osint", "status"]) {
     await run(c);
     await sleep(450);
   }

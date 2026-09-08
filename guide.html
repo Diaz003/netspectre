@@ -132,7 +132,7 @@
   |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
 </pre>
     <h1>NETSPECTRE</h1>
-    <div class="sub">Guía visual y práctica de comandos · v1.0.0 · modo oscuro tipo terminal</div>
+    <div class="sub">Guía visual y práctica de comandos · v2.0.0 · modo oscuro tipo terminal</div>
     <nav class="navlinks" id="navlinks"></nav>
   </div>
 
@@ -223,6 +223,24 @@ const COMMANDS = [
       ["wr", "\n  [✓] 192.168.1.1      137/udp     netbios-ns      [warn:netbios] netbios-response"],
       ["",  "\n"],
       ["c",  "\n# estados: 'open' respondió · 'open|filtered' silencio (típico) · 'closed' rechazó"],
+    ],
+  },
+  {
+    name: "fingerprint", usage: "fingerprint [cidr|ip] [rango]", aliases: "fp", group: "auditoría",
+    what: "Identifica el software que hay detrás de cada servicio web (v2.0, motor async) y da una confianza en %.",
+    use: "Tu escaneo encontró el puerto 80 abierto… ¿pero es la web del router, una cámara IP o la consola de una impresora? Esto lo averigua mirando cabeceras, HTML y respuestas.",
+    example: [
+      ["p",  "netspectre (192.168.1.0/24) > "], ["", "ports 192.168.1.1 80,443"],
+      ["out", "\n  [+] port audit complete in 0.2s — "], ["hl", "2"], ["out", " open port(s)"],
+      ["p",  "\nnetspectre (192.168.1.1) > "], ["", "fingerprint"],
+      ["out", "\n┌──────────────────── HTTP FINGERPRINTS ────────────────────┐"],
+      ["out", "\n  TARGET            PORT   SERVICE                   SERVER / ERROR"],
+      ["hl", "\n  192.168.1.1       80     nginx [73%]               nginx/1.2.2 · MiRouter"],
+      ["hl", "\n  192.168.1.1       443    nginx [73%]               nginx/1.2.2"],
+      ["out", "\n\n  [✓] 2/2 endpoint(s) fingerprinted — stored in session"],
+      ["",  "\n"],
+      ["c",  "\n# confianza = cabeceras (45) + HTML (40) + estado/rutas (15) = 100 pts máx."],
+      ["c",  "\n# tras esto: 'risks' marca los paneles de administración expuestos"],
     ],
   },
   {
@@ -350,11 +368,17 @@ const COMMANDS = [
 // ------------------------------------- recetas listas para copiar (extra)
 const RECIPES = [
   {
-    title: "Auditoría rápida de tu red en 3 comandos",
+    title: "Auditoría completa v2.0: puertos → huella → riesgos → informe",
     lines: [
       ["p", "netspectre (no target) > "], ["", "set target 192.168.1.0/24"],
       ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "hosts"],
       ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "ports"],
+      ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "fingerprint"],
+      ["c",  "\n# identifica los servicios web: nginx [73%] · LuCI · HNAP…"],
+      ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "risks"],
+      ["c",  "\n# ahora incluye paneles de administración expuestos (web-luci, web-hnap…)"],
+      ["p", "\nnetspectre (192.168.1.0/24) > "], ["", "save"],
+      ["c",  "\n# el JSON incluye 'fingerprints' y los hallazgos web en 'risk_summary'"],
     ],
   },
   {
