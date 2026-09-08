@@ -1,0 +1,14 @@
+# NetSpectre dependencies
+#
+# The core tool (netspectre.py) runs on the Python standard library alone:
+# host discovery, TCP/UDP port audits, risk reports and JSON export all
+# work without installing anything.
+#
+# The entries below are only needed for the optional HTTP fingerprinting
+# module (http_fingerprinter.py, used by the `fingerprint` REPL command).
+# Without them the rest of NetSpectre works normally and `fingerprint`
+# prints a clean "aiohttp is not installed" message.
+#
+#   pip install -r requirements.txt
+
+aiohttp>=3.9,<4
