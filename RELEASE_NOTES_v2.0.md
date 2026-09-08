@@ -1,7 +1,7 @@
 # NetSpectre v2.0 — Notas del Release
 
 **Fecha:** 8 de septiembre de 2026
-**Tag:** `v2.0` · **Commit:** `9d332c1` — `feat(core): release NetSpectre v2.0 with HTTP fingerprinting engine`
+**Tag:** `v2.0` · **Commit:** `73aced7` — `feat(core): release NetSpectre v2.0 with HTTP fingerprinting engine`
 **Versión del paquete:** `2.0.0`
 
 ---
