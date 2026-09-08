@@ -39,7 +39,8 @@ jobs:
         run: |
           python netspectre.py --version
           python netspectre.py --help > /dev/null
-          printf 'status\nexit\n' | python netspectre.py --no-color | grep -q "session status"
+          # box_title() uppercases box titles, so match case-insensitively
+          printf 'status\nexit\n' | python netspectre.py --no-color | grep -qi "session status"
 
       - name: fingerprint degrades cleanly without aiohttp
         run: |
