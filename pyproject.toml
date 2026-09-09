@@ -26,6 +26,15 @@ classifiers = [
 [project.optional-dependencies]
 # fingerprinting engine (http_fingerprinter.py) — everything else is stdlib-only
 fingerprint = ["aiohttp>=3.9,<4"]
+# test suite (pytest) and CI tooling
+dev = ["pytest>=8", "aiohttp>=3.9,<4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning:aiohttp.*",
+]
 
 [project.scripts]
 netspectre = "netspectre:main"
