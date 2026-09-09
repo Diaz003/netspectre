@@ -1,3 +1,5 @@
+[![CI](https://github.com/Diaz003/netspectre/actions/workflows/ci.yml/badge.svg)](https://github.com/Diaz003/netspectre/actions/workflows/ci.yml)
+
 # NetSpectre
 
 > **v2.0** — nuevo motor de fingerprinting HTTP asíncrono (`fingerprint`),
