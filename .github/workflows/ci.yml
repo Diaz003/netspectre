@@ -99,5 +99,5 @@ jobs:
         run: |
           printf 'fingerprint 127.0.0.1 1\nexit\n' | python netspectre.py --no-color | grep -qE "fingerprinting|HTTP FINGERPRINTS|error"
 
-      - name: Run pytest suite (full: core, web risk rules and CLI)
+      - name: "Run pytest suite (full: core, web risk rules and CLI)"
         run: python -m pytest tests/ -v --tb=short
