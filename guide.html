@@ -125,14 +125,14 @@
 <div class="wrap">
   <div class="head">
 <pre>
-   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
-  | \ | |  / \|_   _|_   _/ ___||_   _| / ___/ _ \|  _ \| ____|
-  |  \| | / _ \ | |   | | \___ \  | |  | | | |_) |  _|
-  | |\  |/ ___ \| |   | |  ___) | | |  | |__| |_| |  _ <| |___
-  |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
+   _   _ _____ _____ ____  ____  _____ ____ _____ ____  _____
+  | \ | | ____|_   _/ ___||  _ \| ____/ ___|_   _|  _ \| ____|
+  |  \| |  _|   | | \___ \| |_) |  _|| |     | | | |_) |  _|
+  | |\  | |___  | |  ___) |  __/| |__| |___  | | |  _ &lt;| |___
+  |_| \_|_____| |_| |____/|_|   |_____\____| |_| |_| \_\_____|
 </pre>
     <h1>NETSPECTRE</h1>
-    <div class="sub">Guía visual y práctica de comandos · v2.0.0 · modo oscuro tipo terminal</div>
+    <div class="sub">Guía visual y práctica de comandos · v2.0.1 · modo oscuro tipo terminal</div>
     <nav class="navlinks" id="navlinks"></nav>
   </div>
 
@@ -152,7 +152,7 @@
   </div>
 
   <div class="foot">
-    NetSpectre · <a href="demo.html">abrir el REPL interactivo de demo</a> · el motor real vive en <b>netspectre.py</b>
+    NetSpectre · <a href="index.html">abrir el REPL interactivo de demo</a> · el motor real vive en <b>netspectre.py</b>
   </div>
 </div>
 
@@ -222,7 +222,7 @@ const COMMANDS = [
       ["wr", "\n  [✓] 192.168.1.1      123/udp     ntp             [warn:ntp]"],
       ["wr", "\n  [✓] 192.168.1.1      137/udp     netbios-ns      [warn:netbios] netbios-response"],
       ["",  "\n"],
-      ["c",  "\n# estados: 'open' respondió · 'open|filtered' silencio (típico) · 'closed' rechazó"],
+      ["c",  "\n# estados: 'open' respondió (solo este cuenta como riesgo) · 'open|filtered' silencio · 'closed' rechazó"],
     ],
   },
   {
@@ -433,7 +433,7 @@ function cardHTML(c) {
             <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
             <span class="t">netspectre — ejemplo real</span>
             <button data-copy="${esc(c.example.map(l => l[1]).join(""))}">copiar</button>
-            <a class="try" href="demo.html#run=${encodeURIComponent(c.name)}" target="_blank" data-cmd="${c.name}">probar ▸</a>
+            <a class="try" href="index.html#run=${encodeURIComponent(c.name)}" target="_blank" data-cmd="${c.name}">probar ▸</a>
           </div>
           <pre>${ex}</pre>
         </div>
@@ -476,10 +476,10 @@ document.addEventListener("click", e => {
     .finally(() => { btn.textContent = "¡copiado!"; setTimeout(() => btn.textContent = label, 1400); });
 });
 
-// "probar ▸": abre el REPL demo; si demo.html no está servida junto a esta
+// "probar ▸": abre el REPL demo; si index.html no está servida junto a esta
 // página (preview de un solo fichero), copia el comando como fallback.
 let demoAvailable = null;
-const demoProbe = () => demoAvailable ??= fetch("demo.html", { method: "HEAD" })
+const demoProbe = () => demoAvailable ??= fetch("index.html", { method: "HEAD" })
   .then(r => r.ok).catch(() => false);
 document.addEventListener("click", async e => {
   const link = e.target.closest("a.try[data-cmd]");

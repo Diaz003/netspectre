@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-  _____   ___  _____ _____ ___ ___    _   ___ ___ ___  _______  ___
- / __\ \ / / \|_   _|_   _|_ _/ __|  /_\ | _ \_ _|   \|_   _\ \/ /_
-| (_ |\ V /|  \ || |  | |  | | (__  / _ \|  _/| || |) | | |  >  <| '_|
- \___| \_/ |_|\_\|_|  |_| |___\___|/_/ \_\_| |___|___/  |_| /_/\_\_|
-                     ~ local network auditing toolkit ~
+NetSpectre — local network auditing toolkit with an interactive REPL.
 
 Free software, provided "AS-IS" with no warranty: the author is not liable for
 misuse, damage or consequences. Run only against networks you are permitted to test.
@@ -17,6 +13,7 @@ import argparse
 import asyncio
 import concurrent.futures as cf
 import csv
+import errno
 import ipaddress
 import json
 import os
@@ -28,10 +25,11 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __author__ = "NetSpectre Team"
 
 # ============================================================
@@ -87,6 +85,16 @@ _ANSI = {
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
+def vlen(text: str) -> int:
+    """Visible length of a string, ignoring ANSI color codes."""
+    return len(_ANSI_RE.sub("", text))
+
+
+def pad(text: str, width: int) -> str:
+    """Left-justify by *visible* width — ANSI-safe replacement for f'{x:<n}'."""
+    return text + " " * max(0, width - vlen(text))
+
+
 def paint(ansi: Ansi, template: str, **kw: str) -> str:
     """template uses {bold}, {red}, ... and !r! to reset; kwargs fill plain values."""
     base = {k: getattr(ansi, v) for k, v in {
@@ -105,11 +113,11 @@ def c(ansi: Ansi, color: str, text: object) -> str:
 
 
 BANNER = r"""
-   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
-  | \ | |  / \|_   _|_   _/ ___||_   _| / ___/ _ \|  _ \| ____|
-  |  \| | / _ \ | |   | | \___ \  | |  | |  | | | | |_) |  _|
-  | |\  |/ ___ \| |   | |  ___) | | |  | |__| |_| |  _ <| |___
-  |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
+   _   _ _____ _____ ____  ____  _____ ____ _____ ____  _____
+  | \ | | ____|_   _/ ___||  _ \| ____/ ___|_   _|  _ \| ____|
+  |  \| |  _|   | | \___ \| |_) |  _|| |     | | | |_) |  _|
+  | |\  | |___  | |  ___) |  __/| |__| |___  | | |  _ <| |___
+  |_| \_|_____| |_| |____/|_|   |_____\____| |_| |_| \_\_____|
 """
 
 
@@ -182,9 +190,15 @@ SERVICE_HINTS = {
     8443: "https-alt", 9000: "cslistener", 9200: "elasticsearch", 11211: "memcached",
 }
 
-BANNER_PORTS = {21, 22, 25, 79, 110, 143, 587, 631, 993, 995, 5900, 8000, 8080}
-HTTP_PORTS = {80, 81, 3000, 8000, 8008, 8080, 8081, 8888, 9000}  # plaintext only
+BANNER_PORTS = {21, 22, 25, 79, 110, 143, 587, 5900}   # services that talk first
+HTTP_PORTS = {80, 81, 631, 3000, 8000, 8008, 8080, 8081, 8888, 9000}  # plaintext only
 TLS_PORTS = {443, 4443, 8443, 993, 995, 465}  # never send plaintext probes here
+
+# Host discovery: a host is alive when it completes the handshake OR actively
+# refuses (RST) on any of these ports — most devices answer on the first one.
+# 445/3389 catch Windows boxes, 62078 iPhones/iPads (lockdown service).
+PROBE_PORTS = (80, 443, 22, 445, 3389, 62078)
+REFUSED_CODES = {errno.ECONNREFUSED, 10061}  # 10061 = WSAECONNREFUSED (Windows)
 
 # ---------------------------------------------------------------------------
 #  Risk catalog: services whose exposure deserves a warning in the audit.
@@ -521,10 +535,11 @@ class Session:
         self.ips_scanned: int = 0
         self.ports_tested: int = 0
         self.start_time: float = time.time()
-        self.stop = False
-        self.interrupted: bool = False
         self.quit: bool = False
         self.last_hosts: list[HostRecord] = []
+        self.hosts_target: str = ""          # network the host list belongs to
+        self.last_results: dict[str, list[PortResult]] = {}
+        self.udp_range: str = "top"
         self.last_udp: dict[str, list[UdpResult]] = {}
         self.last_fingerprints: dict[str, dict] = {}   # "ip:port" -> fingerprint dict
         self.profile_name: str = ""
@@ -606,6 +621,18 @@ def tcp_probe(ip: str, port: int, timeout: float) -> bool:
         return False
 
 
+def tcp_alive(ip: str, port: int, timeout: float) -> bool:
+    """Host-liveness probe: an open port (handshake) and a closed one (RST/refused)
+    both prove the host is up. Only silence (timeout/filtered) counts as down."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            rc = s.connect_ex((ip, port))
+            return rc == 0 or rc in REFUSED_CODES
+    except OSError:
+        return False
+
+
 def _read_banner(sock: socket.socket) -> str:
     try:
         sock.settimeout(0.8)
@@ -616,15 +643,28 @@ def _read_banner(sock: socket.socket) -> str:
 
 
 def _http_probe(ip: str, port: int) -> str:
+    """HEAD / over plaintext HTTP -> 'HTTP/1.1 200 OK · nginx/1.24.0' (status + Server)."""
+    data = b""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(1.2)
+            s.settimeout(1.5)
             s.connect((ip, port))
-            s.sendall(b"HEAD / HTTP/1.0\r\nHost: netspectre\r\n\r\n")
-            data = s.recv(256)
-            return data.decode("utf-8", errors="replace").strip()
+            s.sendall(f"HEAD / HTTP/1.0\r\nHost: {ip}\r\n"
+                      f"User-Agent: NetSpectre/{__version__}\r\n\r\n".encode())
+            while b"\r\n\r\n" not in data and len(data) < 4096:
+                chunk = s.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
     except OSError:
+        pass
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if not lines:
         return ""
+    status = lines[0].strip()
+    server = next((ln.split(":", 1)[1].strip() for ln in lines[1:]
+                   if ln.lower().startswith("server:")), "")
+    return f"{status} · {server}" if server else status
 
 
 def audit_port(ip: str, port: int, timeout: float) -> PortResult:
@@ -638,14 +678,14 @@ def audit_port(ip: str, port: int, timeout: float) -> PortResult:
                 banner = ""
                 if port in TLS_PORTS:
                     banner = "(tls)"  # plaintext probes would mislead; port state is enough
-                elif port in BANNER_PORTS:
-                    banner = _read_banner(s)
                 elif port in HTTP_PORTS:
                     banner = _http_probe(ip, port)
+                elif port in BANNER_PORTS:
+                    banner = _read_banner(s)
                 first = banner.splitlines()[0].strip() if banner else ""
                 return PortResult(port, "open", SERVICE_HINTS.get(port, "unknown"), first,
                                   risk[1] if risk else "", risk[0] if risk else "")
-            if rc in (10061, 111, 146):  # ECONNREFUSED variants (win/linux)
+            if rc in REFUSED_CODES:  # RST: the host is there, the port is closed
                 return PortResult(port, "closed", SERVICE_HINTS.get(port, "unknown"))
             return PortResult(port, "filtered", SERVICE_HINTS.get(port, "unknown"))
     except OSError:
@@ -653,40 +693,33 @@ def audit_port(ip: str, port: int, timeout: float) -> PortResult:
 
 
 def udp_probe(ip: str, port: int, timeout: float, retries: int = 2) -> UdpResult:
-    """One UDP probe: send a service-aware payload, classify response or ICMP error."""
-    """One UDP probe: send a service-aware payload, classify response or ICMP error."""
+    """One UDP probe: send a service-aware payload and classify the answer.
+
+    The socket is *connected* so the OS hands ICMP "port unreachable" back to us
+    (ECONNREFUSED on Linux/macOS, WSAECONNRESET on Windows). Without that, closed
+    ports look exactly like silent ones and every probe ends up 'open|filtered'.
+    Only a real answer marks the port 'open' and makes it a risk finding.
+    """
     service = UDP_SERVICES.get(port, f"udp/{port}")
     risk = UDP_RISK.get(port)
-    payload = UDP_PAYLOAD_BUILDERS.get(port, lambda: b"x")()
+    payload = UDP_PAYLOAD_BUILDERS.get(port, lambda: b"\x00")()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(timeout)
-            attempt = 0
-            while True:
-                s.sendto(payload, (ip, port))
-                deadline = time.time() + timeout
-                while True:
-                    remaining = deadline - time.time()
-                    if remaining <= 0:
-                        break
-                    s.settimeout(remaining)
-                    try:
-                        data, addr = s.recvfrom(4096)
-                    except ConnectionRefusedError:
-                        return UdpResult(port, "closed", service)
-                    except (socket.timeout, TimeoutError):
-                        break
-                    except OSError:
-                        return UdpResult(port, "filtered", service)
-                    if addr[0] != ip:
-                        continue  # answer from someone else — keep waiting
-                    resp = _classify_udp_response(port, data)
-                    return UdpResult(port, "open", service, resp,
-                                     risk[1] if risk else "", risk[0] if risk else "")
-                attempt += 1
-                if attempt > retries:
-                    return UdpResult(port, "open|filtered", service,
-                                     "", risk[1] if risk else "", risk[0] if risk else "")
+            s.connect((ip, port))
+            for _ in range(retries + 1):
+                try:
+                    s.send(payload)
+                    data = s.recv(4096)
+                except (ConnectionRefusedError, ConnectionResetError):
+                    return UdpResult(port, "closed", service)
+                except (socket.timeout, TimeoutError):
+                    continue
+                except OSError:
+                    return UdpResult(port, "filtered", service)
+                return UdpResult(port, "open", service, _classify_udp_response(port, data),
+                                 risk[1] if risk else "", risk[0] if risk else "")
+            return UdpResult(port, "open|filtered", service)   # silence: unconfirmed
     except OSError:
         return UdpResult(port, "filtered", service)
 
@@ -774,9 +807,14 @@ def icmp_ping(ip: str, timeout: float = 0.8) -> bool:
         s.close()
 
 
-def arp_table() -> dict[str, tuple[str, str]]:
-    """Best-effort MAC/vendor from the local ARP cache (ip/arp across platforms)."""
-    out: dict[str, tuple[str, str]] = {}
+BOGUS_MACS = {"00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF"}
+_MAC_RE = re.compile(r"([0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})")
+
+
+def _arp_entries() -> list[tuple[str, str, str]]:
+    """(ip, MAC, state) rows from the OS neighbour cache (ip neigh / arp -a / arp -an).
+    `state` is the Linux NUD state (REACHABLE, STALE…) or '' when the tool has none."""
+    rows: list[tuple[str, str, str]] = []
     try:
         if _IS_WIN:
             cmd = ["arp", "-a"]
@@ -787,16 +825,22 @@ def arp_table() -> dict[str, tuple[str, str]]:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=6)  # noqa: S603
         text = res.stdout
     except (OSError, subprocess.SubprocessError):
-        return out
-    mac_re = re.compile(r"([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})")
+        return rows
     for line in text.splitlines():
         ipm = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", line)
-        macm = mac_re.search(line)
+        macm = _MAC_RE.search(line)
         if ipm and macm:
-            mac = macm.group(1).replace("-", ":").upper()
-            vendor = OUI.get(mac[:8], "")
-            out[ipm.group(1)] = (mac, vendor)
-    return out
+            # macOS prints '0:1b:63:a:b:c' — normalise every octet to two digits
+            mac = ":".join(part.zfill(2) for part in re.split("[:-]", macm.group(1))).upper()
+            state = line.split()[-1].upper() if " lladdr " in line else ""
+            rows.append((ipm.group(1), mac, state))
+    return rows
+
+
+def arp_table() -> dict[str, tuple[str, str]]:
+    """Best-effort MAC/vendor from the local ARP cache (ip/arp across platforms)."""
+    return {ip: (mac, OUI.get(mac[:8], "")) for ip, mac, _ in _arp_entries()
+            if mac not in BOGUS_MACS}
 
 
 OUI = {
@@ -818,86 +862,126 @@ OUI = {
 #  Scans
 # ============================================================
 
+def _cancel_pool(pool: cf.ThreadPoolExecutor) -> None:
+    """Ctrl+C: drop every queued probe so the console answers right away
+    (only the probes already in flight are left to finish)."""
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except TypeError:  # Python 3.8 has no cancel_futures
+        pool.shutdown(wait=False)
+
+
 def scan_hosts(session: Session, target: str) -> list[HostRecord]:
+    """Find live hosts. A host is up when a TCP probe on PROBE_PORTS connects *or*
+    is refused (RST), when it answers ICMP (ping_sweep), or — on the local LAN —
+    when it answered ARP during the sweep, which catches firewalled devices."""
     a = session.ansi
-    arp = arp_table()
     try:
         net = ipaddress.ip_network(target, strict=False)
     except ValueError as exc:
         error(a, f"invalid target: {exc}")
         return []
-    if "/" not in target:
-        addrs = [net.network_address]
-    else:
-        addrs = sorted(net.hosts(), key=lambda x: int(x))
+    addrs = [net.network_address] if net.num_addresses == 1 else list(net.hosts())
     total = len(addrs)
     if total > 4096:
         warn(a, f"target spans {total} addresses; consider a tighter range")
     print()
-    info(a, f"probing {total} host(s) on {c(a, 'white', target)} (tcp-probe)...")
+    info(a, f"probing {total} host(s) on {c(a, 'white', target)} "
+            f"({'icmp + ' if session.ping_sweep else ''}tcp probes + arp cache)...")
     info(a, f"workers={session.host_workers} timeout={session.host_timeout}s "
             f"ping-sweep={'on' if session.ping_sweep else 'off'}")
     print()
 
     records: dict[str, HostRecord] = {str(ip): HostRecord(ip=str(ip)) for ip in addrs}
+    arp_before = {ip: mac for ip, mac, _ in _arp_entries()}
+    raw_warned = threading.Event()
+    progress = [False]
     started = time.time()
-    stop = False
 
     def check(ip: str) -> str | None:
-        if stop:
-            return None
-        ports = (80, 443, 22, 445) if not session.ping_sweep else (80,)
+        """PTR name ('' when there is none) if the host answers, else None."""
+        alive = False
         if session.ping_sweep:
             try:
-                if icmp_ping(ip, session.host_timeout):
-                    return ip
+                alive = icmp_ping(ip, session.host_timeout)
             except PermissionError:
-                warn(a, "raw sockets need root/administrator; falling back to TCP probe")
                 session.ping_sweep = False
+                if not raw_warned.is_set():
+                    raw_warned.set()
+                    warn(a, "raw sockets need root/administrator; using TCP probes only")
             except OSError:
                 pass
-        return ip if any(tcp_probe(ip, p, session.host_timeout) for p in ports) else None
+        if not alive:
+            alive = any(tcp_alive(ip, port, session.host_timeout) for port in PROBE_PORTS)
+        return resolve_ptr(ip) if alive else None
+
+    def clear_progress() -> None:
+        if progress[0]:
+            print("\r" + " " * 60 + "\r", end="")
+            progress[0] = False
+
+    def mark_up(ip: str, hostname: str, mac: str = "", via: str = "") -> None:
+        rec = records[ip]
+        rec.alive, rec.hostname = True, hostname
+        if mac and mac not in BOGUS_MACS:
+            rec.mac, rec.vendor = mac, OUI.get(mac[:8], "")
+        extras = [x for x in (rec.hostname, rec.mac + (f" ({rec.vendor})" if rec.vendor else "")) if x]
+        suffix = f" {a.gray}— {' · '.join(extras)}{a.reset}" if extras else ""
+        how = f" {a.gray}(arp){a.reset}" if via else ""
+        clear_progress()
+        print(f"  {a.green}[✓]{a.reset} {pad(c(a, 'white', ip), 16)} {c(a, 'b_green', 'up')}{how}{suffix}")
+        session.log(f"HOST-UP {ip} {rec.hostname} {rec.mac} {via}".rstrip())
+
+    def finish(complete: bool) -> list[HostRecord]:
+        alive = sorted((r for r in records.values() if r.alive),
+                       key=lambda r: ipaddress.ip_address(r.ip))
+        session.last_hosts = alive
+        session.hosts_target = str(net) if complete else ""  # partial lists are never reused
+        return alive
 
     with cf.ThreadPoolExecutor(max_workers=session.host_workers) as pool:
         futs = {pool.submit(check, str(ip)): str(ip) for ip in addrs}
-        done_count = 0
-        for fut in cf.as_completed(futs):
-            done_count += 1
-            ip = futs[fut]
-            session.ips_scanned += 1
-            hit = None
-            try:
-                hit = fut.result()
-            except Exception:  # noqa: BLE001 - individual probe failure is non-fatal
-                pass
-            if hit:
-                rec = records[ip]
-                rec.alive = True
-                rec.hostname = resolve_ptr(ip)
-                if ip in arp:
-                    rec.mac, rec.vendor = arp[ip]
-                tag = f"{c(a, 'b_green', 'up')}"
-                extras = []
-                if rec.hostname:
-                    extras.append(rec.hostname)
-                if rec.mac:
-                    extras.append(rec.mac + (f" ({rec.vendor})" if rec.vendor else ""))
-                suffix = f" {a.gray}— {' · '.join(extras)}{a.reset}" if extras else ""
-                print(f"  {a.green}[✓]{a.reset} {c(a, 'white', ip):<16} {tag}{suffix}")
-                session.log(f"HOST-UP {ip} {rec.hostname} {rec.mac}")
-            if done_count % 64 == 0:
-                up = sum(1 for r in records.values() if r.alive)
-                pct = done_count * 100 // total
-                print(f"\r  {a.gray}… {done_count}/{total} ({pct}%) · up={up}{a.reset}",
-                      end="", flush=True)
-    print("\r" + " " * 60 + "\r", end="")
+        try:
+            for done_count, fut in enumerate(cf.as_completed(futs), start=1):
+                ip = futs[fut]
+                session.ips_scanned += 1
+                try:
+                    hostname = fut.result()
+                except Exception:  # noqa: BLE001 - a single probe failure is non-fatal
+                    hostname = None
+                if hostname is not None:
+                    mark_up(ip, hostname, arp_before.get(ip, ""))
+                if total > 64 and done_count % 64 == 0:
+                    up = sum(1 for r in records.values() if r.alive)
+                    print(f"\r  {a.gray}… {done_count}/{total} ({done_count * 100 // total}%) · "
+                          f"up={up}{a.reset}", end="", flush=True)
+                    progress[0] = True
+        except KeyboardInterrupt:
+            _cancel_pool(pool)
+            clear_progress()
+            finish(complete=False)
+            raise
+    clear_progress()
 
+    # ARP pass: the sweep made the OS resolve every on-link address, so a neighbour
+    # that answered ARP is up even when its firewall silently dropped our SYNs.
+    # Only entries created by this sweep (or confirmed REACHABLE) count: old cache
+    # entries may belong to devices that already left the network.
+    for ip, mac, state in _arp_entries():
+        rec = records.get(ip)
+        if rec is None or mac in BOGUS_MACS:
+            continue
+        if rec.alive:
+            if not rec.mac:
+                rec.mac, rec.vendor = mac, OUI.get(mac[:8], "")
+        elif ip not in arp_before or state == "REACHABLE":
+            mark_up(ip, resolve_ptr(ip), mac, via="arp")
+
+    alive = finish(complete=True)
     elapsed = time.time() - started
-    alive = sorted((r for r in records.values() if r.alive), key=lambda r: ipaddress.ip_address(r.ip))
     print()
     info(a, f"scan complete in {elapsed:.1f}s — "
             f"{c(a, 'b_green', str(len(alive)))} host(s) up of {total}")
-    session.last_hosts = alive
     if not alive:
         warn(a, "no live hosts found; try 'set ping_sweep on', raise timeouts, or check the subnet")
     return alive
@@ -913,25 +997,30 @@ def print_hosts_table(ansi: Ansi, hosts: list[HostRecord]) -> None:
     print(f"  {ansi.gray}{RULE}{ansi.reset}")
     for h in hosts:
         state = c(ansi, "b_green", "up")
-        print(f"  {h.ip:<17} {state:<7} {h.hostname[:27]:<28} {h.mac:<18} {h.vendor}")
+        print(f"  {h.ip:<17} {pad(state, 7)} {h.hostname[:27]:<28} {h.mac:<18} {h.vendor}")
     print(f"  {ansi.gray}{RULE}{ansi.reset}\n")
+
+
+def _live_ips(session: Session, target: str) -> list[str]:
+    """Addresses to audit: a single IP as-is; for a CIDR, the live hosts from
+    'hosts' — reused only when that list belongs to this very network (and was
+    not interrupted), otherwise discovery runs first. ValueError on bad input."""
+    net = ipaddress.ip_network(target, strict=False)
+    if "/" not in target:
+        return [str(net.network_address)]
+    if session.last_hosts and session.hosts_target == str(net):
+        return [h.ip for h in session.last_hosts]
+    warn(session.ansi, f"no host list in memory for {net} — running host discovery first")
+    return [h.ip for h in scan_hosts(session, target)]
 
 
 def scan_ports(session: Session, target: str, port_list: list[int]) -> dict[str, list[PortResult]]:
     a = session.ansi
     try:
-        ipaddress.ip_network(target, strict=False)
+        ips = _live_ips(session, target)
     except ValueError:
         error(a, f"invalid target: {target!r}")
         return {}
-    hosts = session.last_hosts
-    if "/" not in target:
-        ips = [target]
-    else:
-        if not hosts:
-            warn(a, "no host list in memory for this subnet — running host discovery first")
-            hosts = scan_hosts(session, target)
-        ips = [h.ip for h in hosts]
     if not ips:
         warn(a, "no targets to audit")
         return {}
@@ -942,27 +1031,25 @@ def scan_ports(session: Session, target: str, port_list: list[int]) -> dict[str,
     print()
     results: dict[str, list[PortResult]] = {}
     started = time.time()
-    stop = False
 
     with cf.ThreadPoolExecutor(max_workers=session.port_workers) as pool:
-        for ip in ips:
-            if stop:
-                break
-            futs = {pool.submit(audit_port, ip, p, session.port_timeout): p for p in port_list}
-            open_ports: list[PortResult] = []
-            for fut in cf.as_completed(futs):
-                if stop:
-                    break
-                session.ports_tested += 1
-                try:
-                    res = fut.result()
-                except Exception:  # noqa: BLE001
-                    continue
-                if res.state == "open":
+        try:
+            for ip in ips:
+                open_ports: list[PortResult] = []
+                results[ip] = open_ports
+                futs = [pool.submit(audit_port, ip, port, session.port_timeout) for port in port_list]
+                for fut in cf.as_completed(futs):
+                    session.ports_tested += 1
+                    try:
+                        res = fut.result()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if res.state != "open":
+                        continue
                     open_ports.append(res)
-                    line = f"  {a.green}[✓]{a.reset} {c(a, 'white', ip):<16} " \
-                           f"{c(a, 'b_cyan', str(res.port) + '/tcp'):<10} " \
-                           f"{c(a, 'magenta', res.service):<14}"
+                    line = (f"  {a.green}[✓]{a.reset} {pad(c(a, 'white', ip), 16)} "
+                            f"{pad(c(a, 'b_cyan', str(res.port) + '/tcp'), 10)} "
+                            f"{pad(c(a, 'magenta', res.service), 14)}")
                     badge = risk_badge(a, res.port)
                     if badge:
                         line += f" {badge}"
@@ -971,8 +1058,14 @@ def scan_ports(session: Session, target: str, port_list: list[int]) -> dict[str,
                     print(line)
                     session.log(f"PORT-OPEN {ip} {res.port} {res.service} "
                                 f"{('RISK=' + res.risk) if res.risk else '-'} {res.banner}")
-            open_ports.sort(key=lambda r: r.port)
-            results[ip] = open_ports
+                open_ports.sort(key=lambda r: r.port)
+        except KeyboardInterrupt:
+            _cancel_pool(pool)
+            for lst in results.values():
+                lst.sort(key=lambda r: r.port)
+            session.last_results = results   # partial, as the console promises
+            raise
+    session.last_results = results
 
     elapsed = time.time() - started
     total_open = sum(len(v) for v in results.values())
@@ -994,7 +1087,8 @@ def scan_ports(session: Session, target: str, port_list: list[int]) -> dict[str,
         for ip, p in findings[:8]:
             reason = RISK_PORTS[p.port][2]
             badge = risk_badge(a, p.port)
-            print(f"      {badge} {ip:<15} {p.port}/tcp {p.service:<14} {a.gray}{reason}{a.reset}")
+            print(f"      {pad(badge, 18)} {ip:<15} {str(p.port) + '/tcp':<10} {p.service:<14} "
+                  f"{a.gray}{reason}{a.reset}")
         if len(findings) > 8:
             print(f"      {a.gray}… and {len(findings) - 8} more — see the 'ports' table or 'save'{a.reset}")
     else:
@@ -1042,14 +1136,14 @@ def print_ports_table(ansi: Ansi, results: dict[str, list[PortResult]], fingerpr
                 risk = f"{ansi.gray}-{ansi.reset}"
             fp_banner = _fingerprint_banner(ansi, ip, p.port, fps)
             banner_cell = fp_banner or (f"{ansi.gray}{banner}{ansi.reset}" if banner else "")
-            print(f"  {ip:<17} {str(p.port) + '/tcp':<12} {p.service:<16} {risk:<16} "
+            print(f"  {ip:<17} {str(p.port) + '/tcp':<12} {p.service:<16} {pad(risk, 16)} "
                   f"{banner_cell}")
     if not any_open:
         warn(ansi, "no open ports in the last audit")
     print(f"  {ansi.gray}{RULE}{ansi.reset}\n")
     if any(p.state == "open" and (p.port in HTTP_FP_PORTS or "http" in p.service.lower())
            for ports in results.values() for p in ports):
-        hint = f"next step: 'fingerprint' to identify the HTTP services (async v2.0 engine)"
+        hint = "next step: 'fingerprint' to identify the HTTP services (async v2.0 engine)"
         print(f"  {ansi.gray}[·] {hint}{ansi.reset}\n")
 
 
@@ -1061,18 +1155,10 @@ def scan_udp(session: Session, target: str, port_list: list[int]) -> dict[str, l
     """UDP audit across one IP or the live hosts of a subnet."""
     a = session.ansi
     try:
-        ipaddress.ip_network(target, strict=False)
+        ips = _live_ips(session, target)
     except ValueError:
         error(a, f"invalid target: {target!r}")
         return {}
-    if "/" in target:
-        hosts = session.last_hosts
-        if not hosts:
-            warn(a, "no host list in memory for this subnet — running host discovery first")
-            hosts = scan_hosts(session, target)
-        ips = [h.ip for h in hosts]
-    else:
-        ips = [target]
     if not ips:
         warn(a, "no targets to audit")
         return {}
@@ -1081,36 +1167,44 @@ def scan_udp(session: Session, target: str, port_list: list[int]) -> dict[str, l
     info(a, f"UDP audit: {len(ips)} host(s) × {len(port_list)} port(s) = "
             f"{c(a, 'white', str(len(ips) * len(port_list)))} datagram(s) "
             f"(workers={session.udp_workers}, timeout={session.udp_timeout}s)")
-    warn(a, "UDP has no handshake: silence is reported as 'open|filtered' (nmap semantics)")
+    info(a, "only ports that answer count as open; silence is reported as 'open|filtered'")
     print()
 
     results: dict[str, list[UdpResult]] = {}
     started = time.time()
     with cf.ThreadPoolExecutor(max_workers=session.udp_workers) as pool:
-        for ip in ips:
-            futs = {pool.submit(udp_probe, ip, p, session.udp_timeout, 1): p for p in port_list}
-            hits: list[UdpResult] = []
-            for fut in cf.as_completed(futs):
-                session.ports_tested += 1
-                try:
-                    res = fut.result()
-                except Exception:  # noqa: BLE001 - single probe failure is non-fatal
-                    continue
-                if res.state in ("open", "open|filtered"):
+        try:
+            for ip in ips:
+                hits: list[UdpResult] = []
+                results[ip] = hits
+                futs = [pool.submit(udp_probe, ip, port, session.udp_timeout, 1) for port in port_list]
+                for fut in cf.as_completed(futs):
+                    session.ports_tested += 1
+                    try:
+                        res = fut.result()
+                    except Exception:  # noqa: BLE001 - single probe failure is non-fatal
+                        continue
+                    if res.state not in ("open", "open|filtered"):
+                        continue
                     hits.append(res)
-                    color = "b_green" if res.state == "open" else "yellow"
-                    line = (f"  {a.green}[✓]{a.reset} {c(a, 'white', ip):<16} "
-                            f"{c(a, color, str(res.port) + '/udp'):<11} "
-                            f"{c(a, 'magenta', res.service):<14}")
+                    session.log(f"UDP-{res.state.upper()} {ip} {res.port} {res.service} {res.response}".rstrip())
+                    if res.state != "open":
+                        continue          # unconfirmed: summarised below, never a finding
+                    line = (f"  {a.green}[✓]{a.reset} {pad(c(a, 'white', ip), 16)} "
+                            f"{pad(c(a, 'b_green', str(res.port) + '/udp'), 11)} "
+                            f"{pad(c(a, 'magenta', res.service), 14)}")
                     badge = risk_badge(a, res.port)
                     if badge:
                         line += f" {badge}"
                     if res.response:
                         line += f" {a.gray}{res.response[:40]}{a.reset}"
                     print(line)
-                    session.log(f"UDP-{res.state.upper()} {ip} {res.port} {res.service} {res.response}")
-            hits.sort(key=lambda r: (r.state != "open", r.port))
-            results[ip] = hits
+                hits.sort(key=lambda r: (r.state != "open", r.port))
+        except KeyboardInterrupt:
+            _cancel_pool(pool)
+            session.last_udp = results
+            raise
+    session.last_udp = results
 
     elapsed = time.time() - started
     opened = sum(1 for lst in results.values() for r in lst if r.state == "open")
@@ -1118,10 +1212,10 @@ def scan_udp(session: Session, target: str, port_list: list[int]) -> dict[str, l
     print()
     info(a, f"UDP audit complete in {elapsed:.1f}s — "
             f"{c(a, 'b_green', str(opened))} confirmed open, "
-            f"{c(a, 'yellow', str(maybe))} open|filtered")
+            f"{c(a, 'yellow', str(maybe))} open|filtered (no reply)")
 
     findings = sorted(
-        ((ip, r) for ip, lst in results.items() for r in lst if r.risk_level),
+        ((ip, r) for ip, lst in results.items() for r in lst if r.state == "open" and r.risk_level),
         key=lambda t: (0 if t[1].risk_level == "high" else 1, ipaddress.ip_address(t[0]), t[1].port),
     )
     if findings:
@@ -1131,12 +1225,12 @@ def scan_udp(session: Session, target: str, port_list: list[int]) -> dict[str, l
                 f"{c(a, 'yellow', str(len(findings) - high) + ' medium')}{a.reset}")
         for ip, r in findings[:8]:
             reason = UDP_RISK[r.port][2]
-            print(f"      {risk_badge(a, r.port)} {ip:<15} {r.port}/udp {r.service:<14} "
-                  f"{a.gray}{reason}{a.reset}")
+            print(f"      {pad(risk_badge(a, r.port), 18)} {ip:<15} {str(r.port) + '/udp':<10} "
+                  f"{r.service:<14} {a.gray}{reason}{a.reset}")
         if len(findings) > 8:
             print(f"      {a.gray}… and {len(findings) - 8} more — see the 'udp' table or 'save'{a.reset}")
     else:
-        ok(a, "no catalogued risky UDP services exposed")
+        ok(a, "no catalogued risky UDP services answered")
     return results
 
 
@@ -1146,29 +1240,34 @@ def print_udp_table(ansi: Ansi, results: dict[str, list[UdpResult]]) -> None:
         return
     print()
     print(box_title(ansi, "udp findings"))
-    print(f"  {ansi.bold}{'HOST':<17} {'PORT/PROTO':<12} {'SERVICE':<15} {'STATE':<15} {'RISK':<16} {'RESPONSE'}{ansi.reset}")
+    print(f"  {ansi.bold}{'HOST':<17} {'PORT/PROTO':<12} {'SERVICE':<15} {'RISK':<16} {'RESPONSE'}{ansi.reset}")
     print(f"  {ansi.gray}{RULE}{ansi.reset}")
-    any_row = False
+    any_open = False
+    silent: dict[str, list[int]] = {}
     for ip, ports in sorted(results.items(), key=lambda kv: ipaddress.ip_address(kv[0])):
-        if not ports:
-            continue
-        any_row = True
         for r in ports:
+            if r.state != "open":
+                if r.state == "open|filtered":
+                    silent.setdefault(ip, []).append(r.port)
+                continue
+            any_open = True
             if r.risk_level == "high":
                 risk = f"{ansi.bold}{ansi.b_red}[RISK:{r.risk}]{ansi.reset}"
             elif r.risk_level == "medium":
                 risk = f"{ansi.yellow}[warn:{r.risk}]{ansi.reset}"
             else:
                 risk = f"{ansi.gray}-{ansi.reset}"
-            state = (c(ansi, "b_green", r.state) if r.state == "open"
-                     else c(ansi, "yellow", r.state) if r.state == "open|filtered"
-                     else r.state)
             resp = (r.response[:24] + "…") if len(r.response) > 25 else r.response
-            print(f"  {ip:<17} {str(r.port) + '/udp':<12} {r.service:<15} {state:<15} {risk:<16} "
+            print(f"  {ip:<17} {str(r.port) + '/udp':<12} {r.service:<15} {pad(risk, 16)} "
                   f"{ansi.gray}{resp}{ansi.reset}")
-    if not any_row:
-        warn(ansi, "no responsive UDP ports in the last audit")
-    print(f"  {ansi.gray}{RULE}{ansi.reset}\n")
+    if not any_open:
+        print(f"  {ansi.gray}no UDP service answered in the last audit{ansi.reset}")
+    print(f"  {ansi.gray}{RULE}{ansi.reset}")
+    for ip, plist in silent.items():
+        plist.sort()
+        shown = ", ".join(map(str, plist[:12])) + (" …" if len(plist) > 12 else "")
+        print(f"  {ansi.gray}{ip:<17} no reply on {len(plist)} port(s) (open|filtered): {shown}{ansi.reset}")
+    print()
 
 
 # ============================================================
@@ -1233,7 +1332,7 @@ def cmd_help(session: Session, args: list[str]) -> None:
         print(f"  {a.bold}{a.b_blue}{group_titles[key].upper()}{a.reset}")
         for cmd in groups[key]:
             aliases = f" {a.gray}({', '.join(cmd.aliases)}){a.reset}" if cmd.aliases else ""
-            print(f"    {c(a, 'b_cyan', cmd.name):<12} {a.gray}{cmd.help_text}{a.reset}{aliases}")
+            print(f"    {pad(c(a, 'b_cyan', cmd.name), 12)} {a.gray}{cmd.help_text}{a.reset}{aliases}")
         print()
     print(f"  {a.gray}type 'help <command>' for usage details{a.reset}\n")
 
@@ -1337,7 +1436,7 @@ def cmd_set(session: Session, args: list[str]) -> None:
         print(f"  {a.bold}{'OPTION':<14} {'VALUE':<18} {'DESCRIPTION'}{a.reset}")
         print(f"  {a.gray}{RULE}{a.reset}")
         for k, v, d in rows:
-            print(f"  {c(a, 'b_cyan', k):<14} {c(a, 'b_yellow', v):<18} {a.gray}{d}{a.reset}")
+            print(f"  {pad(c(a, 'b_cyan', k), 14)} {pad(c(a, 'b_yellow', v), 18)} {a.gray}{d}{a.reset}")
         print(f"  {a.gray}{RULE}{a.reset}")
         print(f"  {a.gray}usage: set <option> <value>{a.reset}\n")
         return
@@ -1388,10 +1487,8 @@ def cmd_ports(session: Session, args: list[str]) -> None:
     except ValueError as exc:
         error(a, str(exc))
         return
-    if session.target and target != session.target:
-        session.last_hosts = []
-    if "/" in target and target != session.target:
-        session.target = target
+    if "/" in target:
+        session.target = target   # auditing a network makes it the session target
     results = scan_ports(session, target, port_list)
     session.last_results = results
     print_ports_table(a, results, fingerprints=getattr(session, "last_fingerprints", {}))
@@ -1438,17 +1535,14 @@ def cmd_fingerprint(session: Session, args: list[str]) -> None:
                 error(a, str(exc))
                 return
         else:
-            plist = [p for p in parse_ports(session.port_range) if p in HTTP_FP_PORTS]
-        # expand a CIDR the same way 'ports' does
-        if "/" in tgt:
-            nets = ipaddress.ip_network(tgt, strict=False)
-            hosts = [str(h) for h in nets.hosts()]
-            if session.last_hosts:
-                known = {h.ip for h in session.last_hosts if h.alive}
-                hosts = [h for h in hosts if h in known]
-        else:
-            hosts = [tgt]
-        targets = [(h, p) for h in hosts for p in plist][:FP_MAX_TARGETS]
+            plist = ([p for p in parse_ports(session.port_range) if p in HTTP_FP_PORTS]
+                     or list(FP_DISCOVERY_PORTS))
+        # a CIDR goes through host discovery first, exactly like 'ports'
+        hosts = _live_ips(session, tgt)
+        if not hosts:
+            warn(a, "no live hosts to fingerprint")
+            return
+        targets = [(h, p) for h in hosts for p in plist]
     else:
         # default 1: every open HTTP-ish port found by the last TCP audit
         for ip, ports in getattr(session, "last_results", {}).items():
@@ -1467,6 +1561,9 @@ def cmd_fingerprint(session: Session, args: list[str]) -> None:
             error(a, "no hosts or open HTTP ports in memory — run 'hosts' or 'ports' first, "
                      "or use: fingerprint <cidr|ip> [range]")
             return
+    if len(targets) > FP_MAX_TARGETS:
+        warn(a, f"{len(targets)} endpoints requested — fingerprinting the first {FP_MAX_TARGETS} "
+                f"(narrow the target or the port list)")
         targets = targets[:FP_MAX_TARGETS]
 
     info(a, f"fingerprinting {len(targets)} HTTP endpoint(s) asynchronously…")
@@ -1488,7 +1585,7 @@ def cmd_fingerprint(session: Session, args: list[str]) -> None:
 
     print(box_title(a, "http fingerprints"))
     print(f"  {a.bold}{'TARGET':<17} {'PORT':<6} {'SERVICE':<30} {'SERVER / ERROR'}{a.reset}")
-    for r in sorted(results, key=lambda x: (x.target, x.port)):
+    for r in sorted(results, key=lambda x: (_ip_sort_key(x.target), x.port)):
         if r.error:
             print(f"  {r.target:<17} {r.port:<6} {a.red}{'— error —':<30}{a.reset} {a.gray}{_trim_fp(r.error)}{a.reset}")
             continue
@@ -1502,6 +1599,14 @@ def cmd_fingerprint(session: Session, args: list[str]) -> None:
             print(f"  {'':<24} {a.gray}↳ {extra}{a.reset}")
     print()
     ok(a, f"{ok_n}/{len(results)} endpoint(s) fingerprinted — stored in session (use 'save' to export)")
+
+
+def _ip_sort_key(ip: str) -> tuple:
+    """Numeric order for IPs (10.0.0.2 before 10.0.0.10); text after them."""
+    try:
+        return (0, int(ipaddress.ip_address(ip)), "")
+    except ValueError:
+        return (1, 0, ip)
 
 
 def _trim_fp(s: str, n: int = 46) -> str:
@@ -1537,12 +1642,13 @@ def collect_findings(session: Session) -> list[dict]:
                              "fix": REMEDIATIONS.get(p.risk, "")})
     for ip, lst in getattr(session, "last_udp", {}).items():
         for r in lst:
-            if r.risk_level:
+            if r.risk_level and r.state == "open":
                 rows.append({"ip": ip, "port": r.port, "proto": "udp",
                              "service": r.service, "level": r.risk_level, "tag": r.risk,
                              "detail": r.response,
                              "reason": UDP_RISK[r.port][2] if r.port in UDP_RISK else "",
-                             "fix": REMEDIATIONS.get(r.risk, "")})    # ---- v2.0: findings derived from HTTP fingerprints (web admin panels) ----
+                             "fix": REMEDIATIONS.get(r.risk, "")})
+    # ---- v2.0: findings derived from HTTP fingerprints (web admin panels) ----
     for key, fp in getattr(session, "last_fingerprints", {}).items():
         hit = match_web_finding(fp if isinstance(fp, dict) else {})
         if hit:
@@ -1554,7 +1660,7 @@ def collect_findings(session: Session) -> list[dict]:
                          "reason": reason,
                          "fix": REMEDIATIONS.get(tag, "")})
     rows.sort(key=lambda x: (0 if x["level"] == "high" else 1,
-                             ipaddress.ip_address(x["ip"]), x["port"]))
+                             _ip_sort_key(x["ip"]), x["port"]))
     return rows
 
 
@@ -1572,7 +1678,7 @@ def write_risks_markdown(session: Session, path: str, flt: str = "all") -> int:
         f"- **Generado:** {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- **Objetivo:** {session.target or '(sin objetivo)'}",
         f"- **Filtro:** {flt}",
-        f"- **Hallazgos en memoria:** {len(all_findings)} ({high_total} high, {high_total and len(all_findings) - high_total} medium)",
+        f"- **Hallazgos en memoria:** {len(all_findings)} ({high_total} high, {len(all_findings) - high_total} medium)",
         f"- **Incluidos en este informe:** {len(findings)}",
         "",
     ]
@@ -1635,8 +1741,8 @@ def cmd_risks(session: Session, args: list[str]) -> None:
                 flt = arg.lower()
             else:
                 fname = arg
-        if not getattr(session, "last_results", {}) and not getattr(session, "last_udp", {}):
-            warn(a, "no audit in memory — run 'ports' or 'udp' first")
+        if not (session.last_results or session.last_udp or session.last_fingerprints):
+            warn(a, "no audit in memory — run 'ports', 'udp' or 'fingerprint' first")
             return
         ext = "md" if fmt == "md" else "csv"
         path = fname or f"netspectre-risks-{time.strftime('%Y%m%d-%H%M%S')}.{ext}"
@@ -1656,10 +1762,8 @@ def cmd_risks(session: Session, args: list[str]) -> None:
     if flt not in RISK_FILTERS:
         error(a, f"unknown filter or format {flt!r} — use all, high, medium, md or csv")
         return
-    has_tcp = bool(getattr(session, "last_results", {}))
-    has_udp = bool(getattr(session, "last_udp", {}))
-    if not has_tcp and not has_udp:
-        warn(a, "no audit in memory — run 'ports' or 'udp' first")
+    if not (session.last_results or session.last_udp or session.last_fingerprints):
+        warn(a, "no audit in memory — run 'ports', 'udp' or 'fingerprint' first")
         return
 
     findings = collect_findings(session)
@@ -1687,7 +1791,7 @@ def cmd_risks(session: Session, args: list[str]) -> None:
             sev = f"{a.yellow}MED{a.reset}"
         port = f"{f['port']}/{f['proto']}"
         reason = f["reason"] or f["detail"]
-        print(f"  {sev:<8} {f['ip']:<17} {port:<12} {f['service']:<15} {a.gray}{reason}{a.reset}")
+        print(f"  {pad(sev, 8)} {f['ip']:<17} {port:<12} {f['service']:<15} {a.gray}{reason}{a.reset}")
         if f["fix"]:
             print(f"  {'':<8} {a.cyan}↳ fix:{a.reset} {a.gray}{f['fix']}{a.reset}")
     print(f"  {a.gray}{RULE}{a.reset}")
@@ -1733,9 +1837,7 @@ def cmd_udp(session: Session, args: list[str]) -> None:
             except ValueError as exc:
                 error(a, str(exc))
                 return
-    if session.target and target != session.target:
-        session.last_hosts = []
-    if "/" in target and target != session.target:
+    if "/" in target:
         session.target = target
     results = scan_udp(session, target, port_list)
     session.last_udp = results
@@ -1867,7 +1969,7 @@ def print_profile_row(ansi: Ansi, name: str, saved: str, values: dict) -> None:
     if values.get("ping_sweep"):
         extras.append("icmp")
     detail = " ".join(extras)
-    print(f"  {c(ansi, 'b_cyan', name):<20} {ansi.gray}{saved:<20}{ansi.reset} "
+    print(f"  {pad(c(ansi, 'b_cyan', name), 20)} {ansi.gray}{saved:<20}{ansi.reset} "
           f"{tgt:<20} {ansi.gray}{detail}{ansi.reset}")
 
 
@@ -1931,7 +2033,7 @@ def cmd_profile(session: Session, args: list[str]) -> None:
             if key in p["values"]:
                 v = p["values"][key]
                 v = "on" if v is True else "off" if v is False else str(v)
-                print(f"  {c(a, 'b_cyan', key):<14} {c(a, 'b_yellow', v)}")
+                print(f"  {pad(c(a, 'b_cyan', key), 14)} {c(a, 'b_yellow', v)}")
         print()
     elif sub in ("delete", "del", "rm", "remove"):
         try:
@@ -1976,24 +2078,24 @@ def cmd_status(session: Session, args: list[str]) -> None:
     hosts = len(session.last_hosts)
     last_results = getattr(session, "last_results", {})
     open_ports = sum(len(p) for p in last_results.values())
-    high_n = sum(1 for lst in last_results.values() for p in lst if p.risk_level == "high")
-    med_n = sum(1 for lst in last_results.values() for p in lst if p.risk_level == "medium")
-    web_rows = [f for f in collect_findings(session) if str(f.get("tag", "")).startswith("web-")]
-    high_n += sum(1 for f in web_rows if f["level"] == "high")
-    med_n += sum(1 for f in web_rows if f["level"] == "medium")
+    udp_open = sum(1 for lst in session.last_udp.values() for r in lst if r.state == "open")
+    findings = collect_findings(session)
+    high_n = sum(1 for f in findings if f["level"] == "high")
+    med_n = len(findings) - high_n
     print()
     print(box_title(a, "session status"))
     rows = [
         ("uptime", session.uptime()),
         ("target", session.target or "(unset)"),
         ("port_range", session.port_range),
-        ("timeouts", f"host={session.host_timeout}s port={session.port_timeout}s udp={session.udp_timeout}s"),            ("workers", f"hosts={session.host_workers} ports={session.port_workers}"),
-            ("ping_sweep", "on" if session.ping_sweep else "off"),
+        ("timeouts", f"host={session.host_timeout}s port={session.port_timeout}s udp={session.udp_timeout}s"),
+        ("workers", f"hosts={session.host_workers} ports={session.port_workers} udp={session.udp_workers}"),
+        ("ping_sweep", "on" if session.ping_sweep else "off"),
         ("last scan", f"{hosts} live host(s) in memory"),
         ("last audit", f"{open_ports} open port(s) in memory"),
         ("last fingerprints", f"{len(getattr(session, 'last_fingerprints', {}))} HTTP endpoint(s) in memory"),
         ("profile", session.profile_name or "(none)"),
-            ("last udp", f"{sum(len(v) for v in session.last_udp.values())} responsive UDP port(s) in memory"),
+        ("last udp", f"{udp_open} UDP port(s) answering in memory"),
         ("risk found", f"{high_n} high · {med_n} medium"),
         ("risk gate", f"high {'off' if session.max_high is None else chr(8804) + ' ' + str(session.max_high)} · "
                       f"medium {'off' if session.max_medium is None else chr(8804) + ' ' + str(session.max_medium)}"),
@@ -2020,29 +2122,11 @@ def cmd_history(session: Session, args: list[str]) -> None:
     print()
 
 
-@_group("output")
 def build_report(session: Session) -> dict:
     """Assemble the full JSON report document (shared by 'save' and --json)."""
     results = getattr(session, "last_results", {})
     udp_results = getattr(session, "last_udp", {})
     findings = collect_findings(session)
-    tcp_findings = [
-        {
-            "ip": ip, "port": p.port, "service": p.service, "proto": "tcp",
-            "level": p.risk_level, "tag": p.risk,
-            "reason": RISK_PORTS[p.port][2] if p.port in RISK_PORTS else "",
-            "fix": REMEDIATIONS.get(p.risk, ""),
-        }
-        for ip, ports in results.items() for p in ports if p.risk_level
-    ] + [
-        {
-            "ip": ip, "port": r.port, "service": r.service, "proto": "udp",
-            "level": r.risk_level, "tag": r.risk,
-            "reason": UDP_RISK[r.port][2] if r.port in UDP_RISK else "",
-            "fix": REMEDIATIONS.get(r.risk, ""),
-        }
-        for ip, lst in udp_results.items() for r in lst if r.risk_level
-    ]
     return {
         "tool": "NetSpectre",
         "version": __version__,
@@ -2060,6 +2144,7 @@ def build_report(session: Session) -> dict:
     }
 
 
+@_group("output")
 def cmd_save(session: Session, args: list[str]) -> None:
     a = session.ansi
     path = args[0] if args else f"netspectre-report-{time.strftime('%Y%m%d-%H%M%S')}.json"
@@ -2080,9 +2165,10 @@ def cmd_save(session: Session, args: list[str]) -> None:
     high = report["risk_summary"]["high"]
     med = report["risk_summary"]["medium"]
     findings = report["risk_summary"]["findings"]
-    udp_rows = sum(len(v) for v in udp_results.values())
+    udp_rows = sum(1 for v in udp_results.values() for r in v if r.state == "open")
     ok(a, f"report saved to {c(a, 'b_yellow', path)} "
-          f"({len(hosts)} host(s), {sum(len(v) for v in results.values())} tcp + {udp_rows} udp result(s))")
+          f"({len(hosts)} host(s), {sum(len(v) for v in results.values())} tcp + {udp_rows} udp open port(s), "
+          f"{len(fps)} fingerprint(s))")
     if findings:
         warn(a, f"includes risk summary: {c(a, 'b_red', str(high) + ' high')}{a.reset}, "
                 f"{c(a, 'yellow', str(med) + ' medium')}{a.reset} finding(s)")
@@ -2204,6 +2290,18 @@ def repl(session: Session) -> None:
 
 
 def main() -> int:
+    """Entry point (also used by the 'netspectre' console script)."""
+    try:
+        return _main()
+    except BrokenPipeError:
+        # stdout was piped into something that stopped reading (head, grep -q…):
+        # leave quietly instead of dumping a traceback (recipe from the Python docs)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        return 1
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser(
         prog="netspectre",
         description="NetSpectre — interactive local network auditing toolkit "
@@ -2236,7 +2334,7 @@ def main() -> int:
     session = Session(ansi, color, ping=False)
     if args.profile:
         try:
-            n = load_profile(session, args.profile)
+            load_profile(session, args.profile)
             session.profile_name = args.profile
         except ValueError as exc:
             error(ansi, str(exc))
@@ -2278,19 +2376,25 @@ def main() -> int:
     if args.udp is not None:
         info(ansi, f"udp audit enabled: {c(ansi, 'b_yellow', args.udp)}")
     info(ansi, f"local address: {local_ip()} · auto-detected subnet: {session.subnet}")
-    warn(ansi, f"use only on networks you are authorized to test (e.g. your own LAN)\n")
+    warn(ansi, "use only on networks you are authorized to test (e.g. your own LAN)\n")
 
     if args.plain:
         target = session.target or session.subnet
-        cmd_hosts(session, [target])
-        cmd_ports(session, [target])
-        if args.udp is not None:
-            cmd_udp(session, [target, args.udp])
+        try:
+            cmd_hosts(session, [target])
+            cmd_ports(session, [target])
+            if args.udp is not None:
+                cmd_udp(session, [target, args.udp])
+        except KeyboardInterrupt:
+            print()
+            warn(ansi, "interrupted by user")
+            return 130
         breaches = evaluate_risk_gate(session)
         if args.json:
-            sys.stdout = real_stdout
-            json.dump(build_report(session), sys.stdout, indent=2, ensure_ascii=False)
-            sys.stdout.write("\n")
+            # the redirect stays on: gate messages below go to stderr, the pipe gets JSON only
+            json.dump(build_report(session), real_stdout, indent=2, ensure_ascii=False)
+            real_stdout.write("\n")
+            real_stdout.flush()
         if breaches:
             for b in breaches:
                 error(ansi, f"risk gate FAILED — {b}")

@@ -1,5 +1,49 @@
 # NetSpectre v2.0 — Notas del Release
 
+## 🩹 v2.0.1 — parche de fiabilidad
+
+**Fecha:** 18 de noviembre de 2026 · **Versión del paquete:** `2.0.1`
+
+Probado contra servicios reales en local (FTP, HTTP, Redis, SMB, DNS…). Lo que
+fallaba y cómo queda:
+
+- **Banners HTTP** — 8000/8080 se trataban como servicios que hablan primero:
+  el escáner esperaba, no recibía nada y nunca mandaba el `HEAD /`. Ahora sale
+  estado + `Server` (`HTTP/1.0 200 OK · nginx/1.24.0`).
+- **UDP sin falsos positivos** — con el socket sin conectar el sistema nunca
+  entregaba el ICMP "port unreachable", así que los puertos cerrados salían
+  `open|filtered` y encima contaban como riesgo. Ahora se detecta `closed` y
+  solo un puerto que responde cuenta como hallazgo.
+- **Descubrimiento de hosts** — un RST (puerto cerrado) también demuestra que
+  el host existe; antes se ignoraba. En la LAN se relee la caché ARP tras el
+  barrido y salen los equipos con firewall que tiran todo el TCP (`up (arp)`).
+  La lectura ARP de macOS también funcionaba mal.
+- **Lista de hosts por red** — `ports`/`udp`/`fingerprint` sobre un CIDR
+  podían auditar la lista de hosts de otra subred. Ahora solo se reutiliza si
+  es de la misma red; si no, se descubre antes.
+- **`fingerprint <cidr>`** — descubre hosts primero (antes probaba todas las
+  IP de la red) y avisa si recorta a 200 endpoints. Las colas ya no dan
+  timeouts falsos: el tope global empieza cuando le toca a cada objetivo.
+- **Python 3.8+ de verdad** — el motor usaba `asyncio.TaskGroup` (3.11+)
+  aunque el paquete decía 3.8+. Ahora usa `gather`; suite probada de 3.8 a 3.13.
+- **Ctrl+C** — corta el escaneo al momento (antes esperaba a toda la cola) y
+  conserva lo encontrado. En `--plain` sale con código 130.
+- **`--plain --json` con puerta de riesgo** — los avisos del gate salían por
+  stdout detrás del JSON y rompían `jq`; ahora van a stderr.
+- **Informes** — el Markdown contaba mal los `medium` con 0 `high`, `status`
+  no sumaba UDP y `risks md|csv` no exportaba si solo había hallazgos web.
+- **Tablas** — columnas alineadas también con colores (el relleno contaba los
+  códigos ANSI).
+- **Demo web (`index.html`)** — `risks` petaba (`rsplit` no existe en JS), las
+  IP sueltas de la red simulada no funcionaban y se ignoraban los rangos de
+  puertos.
+- **`guide.html`** — los botones "probar ▸" apuntaban a un `demo.html` que no
+  existe; banner ASCII corregido (antes no ponía NETSPECTRE).
+- **Tests** — 23 pruebas de regresión nuevas (`tests/test_scanner_fixes.py`),
+  86 en total; CI añade Python 3.9.
+
+---
+
 **Fecha:** 8 de septiembre de 2026
 **Tag:** `v2.0` · **Commit:** `73aced7` — `feat(core): release NetSpectre v2.0 with HTTP fingerprinting engine`
 **Versión del paquete:** `2.0.0`
@@ -50,8 +94,8 @@ netspectre > fingerprint
   `ports` → si no hay auditoría de puertos, sondea **80/443/8080** sobre los
   hosts descubiertos con `hosts` → objetivo explícito
   (`fingerprint <cidr|ip> [rango]`).
-- Ejecución **async real** (`asyncio.TaskGroup`, semáforo 16 concurrentes,
-  tope de 200 objetivos).
+- Ejecución **async real** (16 objetivos concurrentes, tope de 200 objetivos;
+  desde 2.0.1 con `asyncio.gather` en vez de `TaskGroup`).
 - **Degradación elegante:** sin `aiohttp` el resto de la herramienta funciona
   igual y `fingerprint` avisa con un mensaje limpio.
 
@@ -82,11 +126,14 @@ ports → fingerprint → risks → save
 ## 📦 Empaquetado e instalación
 
 - **`pyproject.toml`** (versión `2.0.0`): instalable con `pip`/`pipx`;
-  comando `netspectre` en el PATH; `aiohttp` como dependencia **opcional**:
+  comando `netspectre` en el PATH; `aiohttp` como dependencia **opcional**.
+  No está publicado en PyPI, así que se instala desde GitHub:
 
   ```bash
-  pip install netspectre               # núcleo (solo stdlib)
-  pip install "netspectre[fingerprint]"  # con motor HTTP async
+  # núcleo (solo stdlib)
+  pip install "git+https://github.com/Diaz003/netspectre.git"
+  # con motor HTTP async
+  pip install "netspectre[fingerprint] @ git+https://github.com/Diaz003/netspectre.git"
   ```
 
 - **`requirements.txt`**: documenta la dependencia opcional
@@ -99,7 +146,7 @@ ports → fingerprint → risks → save
 
 ## 🤝 CI/CD (GitHub Actions)
 
-`.github/workflows/ci.yml` valida en **Python 3.11 y 3.13**:
+`.github/workflows/ci.yml` valida en **Python 3.11 y 3.13** (3.9 añadido en 2.0.1):
 
 - **job `core`** — sin `aiohttp`: compila todos los módulos, comprueba que el
   banner de versión coincide con `pyproject.toml`, smoke test de ayuda/status

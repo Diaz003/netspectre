@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+import netspectre
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "netspectre.py"
 
@@ -172,7 +174,7 @@ def test_plain_json_report_is_valid_and_complete():
                    "--target", "127.0.0.1", "--ports", "1"])
     assert res.returncode == 0
     report = json.loads(res.stdout)
-    assert report["version"] == "2.0.0"
+    assert report["version"] == netspectre.__version__
     assert report["target"] == "127.0.0.1"
     assert "hosts" in report and "risk_summary" in report
     assert set(report["risk_summary"]) >= {"high", "medium", "findings"}

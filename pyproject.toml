@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netspectre"
-version = "2.0.0"
+version = "2.0.1"
 description = "Local network auditing toolkit with an interactive Metasploit-style REPL and an async HTTP fingerprinting engine"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -19,7 +19,10 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
 

@@ -66,7 +66,7 @@
   |_| \_/_/   \_\_|   |_| |____/  |_|   \____\___/|_| \_\_____|
 </pre>
     <h1>NETSPECTRE</h1>
-    <div class="sub">v2.0.0 — interactive local network auditing toolkit · terminal REPL demo</div>
+    <div class="sub">v2.0.1 — interactive local network auditing toolkit · terminal REPL demo</div>
     <div class="badges">
       <span class="badge sim">⚠ motor simulado: sin paquetes reales</span>
       <span class="badge ansi">estética ANSI estilo Metasploit/Aircrack</span>
@@ -149,7 +149,7 @@ const C = {
 };
 
 // ---------- motor simulado ----------
-const state = { target: null, portRange: "top100", lastHosts: [], lastResults: {}, lastUdp: {}, lastFingerprints: {}, start: Date.now(),
+const state = { target: null, portRange: "top100", lastHosts: [], hostsTarget: "", lastResults: {}, lastUdp: {}, lastFingerprints: {}, start: Date.now(),
   hostTimeout: 0.5, portTimeout: 1.0, workers: 128, portWorkers: 256, udpTimeout: 2.0, udpWorkers: 128, pingSweep: false, ipsScanned: 0, portsTested: 0,
   profile: null };
 
@@ -255,12 +255,67 @@ const NETS = {
              "5000":{ scheme: "http",  service: "Synology DSM", conf: 84, server: "Synology/7.1", title: "DSM login" } } },
   ],
 };
-function hostsOf(cidr) {
-  if (NETS[cidr]) return NETS[cidr];
-  if (cidr === "127.0.0.1" || cidr === "localhost")
-    return [{ ip: "127.0.0.1", host: "localhost", mac: "", vendor: "", ports: [], udps: [] }];
-  return null;
+NETS["127.0.0.1/32"] = [{ ip: "127.0.0.1", host: "localhost", mac: "", vendor: "", ports: [], udps: [] }];
+const ALL_HOSTS = Object.values(NETS).flat();
+const HTTP_FP = [80, 443, 8080, 8443, 81, 8000, 8008, 8081, 8888, 9000];
+const TOP_TCP_COUNT = 65;    // len(TOP_PORTS) en netspectre.py
+
+function ipToInt(ip) { return ip.split(".").reduce((n, o) => n * 256 + +o, 0); }
+function cidrRange(t) {            // [primera, última, prefijo] como enteros
+  const [ip, bits] = t.split("/");
+  const n = bits === undefined ? 32 : +bits;
+  const size = 2 ** (32 - n);
+  const lo = Math.floor(ipToInt(ip) / size) * size;
+  return [lo, lo + size - 1, n];
 }
+function netKey(t) { const [lo, , n] = cidrRange(t); return `${lo}/${n}`; }
+function hostCount(t) { const [lo, hi, n] = cidrRange(t); return n >= 31 ? hi - lo + 1 : hi - lo - 1; }
+// hosts simulados dentro del objetivo (IP suelta o CIDR); null si no toca ninguna red simulada
+function hostsOf(target) {
+  if (target === "localhost") target = "127.0.0.1";
+  const [lo, hi] = cidrRange(target);
+  let touched = false, found = [];
+  for (const [net, hosts] of Object.entries(NETS)) {
+    const [nlo, nhi] = cidrRange(net);
+    if (hi < nlo || lo > nhi) continue;
+    touched = true;
+    found = found.concat(hosts.filter(h => { const v = ipToInt(h.ip); return v >= lo && v <= hi; }));
+  }
+  return touched ? found : null;
+}
+function inSpec(port, spec) {
+  if (spec === "top100" || spec === "all") return true;
+  return spec.split(",").some(part => {
+    const [a, b] = part.split("-").map(Number);
+    return b === undefined ? port === a : port >= a && port <= b;
+  });
+}
+function specSize(spec, top) {
+  if (spec === "top100") return top;
+  if (spec === "all") return 65535;
+  return spec.split(",").reduce((n, part) => {
+    const [a, b] = part.split("-").map(Number);
+    return n + (b === undefined ? 1 : b - a + 1);
+  }, 0);
+}
+function expandSpec(spec) {
+  const out = [];
+  for (const part of spec.split(",")) {
+    const [a, b] = part.split("-").map(Number);
+    for (let p = a; p <= (b === undefined ? a : b) && out.length < 1000; p++) out.push(p);
+  }
+  return out;
+}
+// como el _live_ips() real: un CIDR reutiliza la lista de 'hosts' solo si es de esa red
+async function liveIps(target) {
+  if (!target.includes("/")) return [target];
+  if (state.hostsTarget !== netKey(target)) {
+    echo(`  ${warn} no hay lista de hosts en memoria para ${target} — ejecutando el descubrimiento primero`);
+    await cmdHosts([target]);
+  }
+  return state.lastHosts.map(h => h.ip);
+}
+const NOT_SIMULATED = () => echo(`  ${err} la demo solo simula ${COLORS.cyan("192.168.1.0/24")} y ${COLORS.cyan("127.0.0.1")} — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
 function resolvePorts(spec) {
   const s = (spec || "").trim().toLowerCase();
   if (!s || s === "top100" || s === "top" || s === "default") return "top100";
@@ -300,10 +355,15 @@ function badge(port) {
   if (!r) return "";
   return r[0] === "high" ? COLORS.b_red(`[RISK:${r[1]}]`) : COLORS.yellow(`[warn:${r[1]}]`);
 }
-function riskCol(port) {
+// el relleno se calcula sobre el texto visible, no sobre los códigos de color
+function badgePadded(port, n) {
   const r = RISK[port];
-  if (!r) return COLORS.gray("-");
-  return (r[0] === "high" ? COLORS.b_red(`[RISK:${r[1]}]`) : COLORS.yellow(`[warn:${r[1]}]`)).padEnd(16 + r[1].length + 2);
+  if (!r) return " ".repeat(n);
+  const txt = (r[0] === "high" ? `[RISK:${r[1]}]` : `[warn:${r[1]}]`).padEnd(n);
+  return r[0] === "high" ? COLORS.b_red(txt) : COLORS.yellow(txt);
+}
+function riskCol(port) {
+  return RISK[port] ? badgePadded(port, 16) : COLORS.gray("-".padEnd(16));
 }
 function title(t) { const inner = ` ${t.toUpperCase()} `; return COLORS.bold(COLORS.cyan(`┌${inner.padStart(Math.floor((76 + inner.length) / 2), "─").padEnd(76, "─")}┐`)); }
 
@@ -353,14 +413,14 @@ async function typeLine(line, speed = 14) {
 
 // ---------- banner ----------
 const BANNER =
-`   _   _    _ _____ _____ ____  _____   ____ ___  ____  _____
-  | \\ | |  / \\|_   _|_   _/ ___||_   _| / ___/ _ \\|  _ \\| ____|
-  |  \\| | / _ \\ | |   | | \\___ \\  | |  | |  | | | | | |_) |  _|
-  | |\\  |/ ___ \\| |   | |  ___) | | |  | |__| |_| |  _ <| |___
-  |_| \\_/_/   \\_\\_|   |_| |____/  |_|   \\____\\___/|_| \\_\\_____|`;
+`   _   _ _____ _____ ____  ____  _____ ____ _____ ____  _____
+  | \\ | | ____|_   _/ ___||  _ \\| ____/ ___|_   _|  _ \\| ____|
+  |  \\| |  _|   | | \\___ \\| |_) |  _|| |     | | | |_) |  _|
+  | |\\  | |___  | |  ___) |  __/| |__| |___  | | |  _ <| |___
+  |_| \\_|_____| |_| |____/|_|   |_____\\____| |_| |_| \\_\\_____|`;
 function drawBanner() {
   echo(COLORS.cyan(BANNER));
-  echo(`        ${COLORS.bold(COLORS.mag("NetSpectre"))} ${COLORS.gray("v2.0.0")}  ${COLORS.dim("~")}  ${COLORS.gray("local network auditing toolkit")}`);
+  echo(`        ${COLORS.bold(COLORS.mag("NetSpectre"))} ${COLORS.gray("v2.0.1")}  ${COLORS.dim("~")}  ${COLORS.gray("local network auditing toolkit")}`);
   blank();
   echo(`  ${warn} ${COLORS.yellow("Authorized-use only: audit networks you own or are permitted to test.")}`);
   blank();
@@ -422,7 +482,7 @@ async function cmdSet(args) {
   const key = args[0].toLowerCase(), val = args.slice(1).join(" ");
   if (key === "target") {
     if (!isIPorCIDR(val)) { echo(`  ${err} objetivo inválido: '${esc(val)}' — usa una IP o CIDR (ej. 192.168.1.0/24)`); return; }
-    state.target = val; state.lastHosts = []; state.lastResults = {};
+    state.target = val;
     echo(`  ${okk} ${COLORS.green("target => " + val)}`);
   } else if (key === "port_range") {
     const p = resolvePorts(val);
@@ -444,15 +504,15 @@ async function cmdHosts(args) {
   if (!target) { echo(`  ${err} sin objetivo — usa: hosts <cidr|ip>  (o 'set target <cidr>')`); return; }
   if (!isIPorCIDR(target)) { echo(`  ${err} objetivo inválido: '${esc(target)}'`); return; }
   const table = hostsOf(target);
+  const total = hostCount(target);
   blank();
-  echo(`  ${plus} sondeando ${table ? (isIPorCIDR(target) && target.includes("/") ? "254" : "1") : "254"} host(s) en ${COLORS.white(target)} (tcp-probe)...`);
+  echo(`  ${plus} sondeando ${total} host(s) en ${COLORS.white(target)} (sondas tcp + caché arp)...`);
   echo(`  ${plus} workers=${state.workers} timeout=${state.hostTimeout}s ping-sweep=${state.pingSweep ? "on" : "off"}`);
   blank();
   await sleep(350);
-  state.ipsScanned += 254;
+  state.ipsScanned += total;
   if (!table) {
-    echo(`  ${err} la demo solo simula ${COLORS.cyan("192.168.1.0/24")} y ${COLORS.cyan("127.0.0.1")}.`);
-    echo(`  ${warn} para redes reales ejecuta la herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
+    NOT_SIMULATED();
     blank(); return;
   }
   for (const h of table) {
@@ -460,7 +520,13 @@ async function cmdHosts(args) {
     echo(`  ${okk} ${COLORS.white(h.ip.padEnd(16))} ${COLORS.b_green("up")}${extras ? " " + COLORS.gray("— " + extras) : ""}`);
     await sleep(160);
   }
-  echo(`  ${plus} escaneo completado — ${COLORS.b_green(String(table.length))} host(s) activos`);
+  echo(`  ${plus} escaneo completado — ${COLORS.b_green(String(table.length))} host(s) activos de ${total}`);
+  state.lastHosts = table;
+  state.hostsTarget = netKey(target);
+  if (!table.length) {
+    echo(`  ${warn} ningún host responde — prueba 'set ping_sweep on', sube los timeouts o revisa la subred`);
+    blank(); return;
+  }
   blank();
   echo(title(`active hosts (${table.length})`));
   echo(`  ${COLORS.bold("IP".padEnd(17))} ${COLORS.bold("STATE".padEnd(7))} ${COLORS.bold("HOSTNAME".padEnd(22))} ${COLORS.bold("MAC".padEnd(19))} VENDOR`);
@@ -469,7 +535,6 @@ async function cmdHosts(args) {
     echo(`  ${h.ip.padEnd(17)} ${COLORS.b_green("up".padEnd(7))} ${h.host.padEnd(22)} ${COLORS.gray(h.mac.padEnd(19))} ${h.vendor}`);
   echo(`  ${COLORS.gray(RULE)}`);
   blank();
-  state.lastHosts = table;
 }
 
 async function cmdPorts(args) {
@@ -480,24 +545,21 @@ async function cmdPorts(args) {
   }
   if (!target) target = state.target;
   if (!target) { echo(`  ${err} sin objetivo — usa: ports <cidr|ip> [rango]`); return; }
+  if (!isIPorCIDR(target)) { echo(`  ${err} objetivo inválido: '${esc(target)}'`); return; }
   if (rangeArg) { const p = resolvePorts(rangeArg); if (p === null) { echo(`  ${err} rango inválido`); return; } state.portRange = p; }
-  const table = hostsOf(target);
-  if (!table) {
-    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
-    return;
-  }
-  let ips = table.map(h => h.ip);
-  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
-  if (target.includes("/")) ips = state.lastHosts.map(h => h.ip);
-  const nPorts = state.portRange === "top100" ? 65 : state.portRange === "all" ? 65535 : state.portRange.split(",").reduce((n, s) => n + (s.includes("-") ? (+s.split("-")[1] - +s.split("-")[0] + 1) : 1), 0);
+  if (!hostsOf(target)) { NOT_SIMULATED(); return; }
+  if (target.includes("/")) state.target = target;
+  const ips = await liveIps(target);
+  if (!ips.length) { echo(`  ${warn} no hay objetivos que auditar`); return; }
+  const nPorts = specSize(state.portRange, TOP_TCP_COUNT);
   blank();
   echo(`  ${plus} auditando ${ips.length} host(s) × ${nPorts} puerto(s) = ${COLORS.white(String(ips.length * nPorts))} sondas (workers=${state.portWorkers}, timeout=${state.portTimeout}s)`);
   blank();
   const found = [];
   for (const ip of ips) {
-    const h = table.find(x => x.ip === ip);
+    const h = ALL_HOSTS.find(x => x.ip === ip);
     if (!h) continue;
-    for (const [port, svc, banner] of h.ports) {
+    for (const [port, svc, banner] of h.ports.filter(([p]) => inSpec(p, state.portRange))) {
       state.portsTested++;
       found.push({ ip, port, svc, banner, risk: RISK[port] ? RISK[port][1] : "", level: RISK[port] ? RISK[port][0] : "" });
       const b = badge(port);
@@ -519,58 +581,59 @@ async function cmdPorts(args) {
       const high = risky.filter(f => f.level === "high").length;
       echo(`\n  ${COLORS.yellow("[!]")} ${risky.length} exposición(es) de riesgo: ${COLORS.b_red(String(high) + " high")}, ${COLORS.yellow(String(risky.length - high) + " medium")}`);
       for (const f of risky.slice(0, 8))
-        echo(`      ${badge(f.port)} ${f.ip.padEnd(15)} ${f.port}/tcp ${f.svc.padEnd(14)} ${COLORS.gray("revisar exposición y credenciales")}`);
+        echo(`      ${badgePadded(f.port, 18)} ${f.ip.padEnd(15)} ${(f.port + "/tcp").padEnd(10)} ${f.svc.padEnd(14)} ${COLORS.gray("revisar exposición y credenciales")}`);
     }
     blank();
   }
+  if (!found.length) echo(`  ${warn} ningún puerto abierto en el rango ${state.portRange}`);
   state.lastResults = {};
-  for (const f of found) {
-    (state.lastResults[f.ip] = state.lastResults[f.ip] || []).push({ port: f.port, service: f.svc, banner: f.banner, risk: f.risk, risk_level: f.level });
-  }
-  for (const ip of Object.keys(state.lastResults)) {
-    const h = table.find(x => x.ip === ip);
-    if (h && h.fps) {
-      for (const p of state.lastResults[ip])
-        if (h.fps[String(p.port)]) state.lastFingerprints[`${ip}:${p.port}`] = h.fps[String(p.port)];
-    }
-  }
+  for (const ip of ips) state.lastResults[ip] = [];
+  for (const f of found)
+    state.lastResults[f.ip].push({ port: f.port, service: f.svc, banner: f.banner, risk: f.risk, risk_level: f.level });
 }
 
 // v2.0: fingerprint HTTP simulado (mismas capas que el motor real)
 async function cmdFingerprint(args) {
-  let target = "", rangeArg = "";
-  for (const a of args) {
-    if (!target && !looksLikePortSpec(a)) target = a;
-    else if (!rangeArg) rangeArg = a;
-  }
-  if (!target) target = state.target;
-  if (!target) { echo(`  ${err} sin objetivo — usa: fingerprint <cidr|ip> [rango]`); return; }
-  const table = hostsOf(target);
-  if (!table) {
-    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
-    return;
-  }
   let pairs = [];
-  const openHttp = [];
-  for (const [ip, ports] of Object.entries(state.lastResults))
-    for (const p of ports)
-      if (p.service.toLowerCase().includes("http") || [80, 443, 8080, 8443, 81, 8000, 8008, 8081, 8888, 9000].includes(p.port))
-        openHttp.push([ip, p.port]);
-  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
-  if (openHttp.length) {
-    pairs = openHttp;
+  if (args.length) {
+    const target = args[0];
+    if (!isIPorCIDR(target)) { echo(`  ${err} objetivo inválido: '${esc(target)}'`); return; }
+    if (!hostsOf(target)) { NOT_SIMULATED(); return; }
+    let plist;
+    if (args[1]) {
+      const spec = resolvePorts(args[1]);
+      if (spec === null) { echo(`  ${err} rango inválido: '${esc(args[1])}'`); return; }
+      plist = spec === "top100" || spec === "all" ? HTTP_FP : expandSpec(spec);
+    } else {
+      plist = HTTP_FP.filter(p => inSpec(p, state.portRange));
+      if (!plist.length) plist = [80, 443, 8080];
+    }
+    const ips = await liveIps(target);
+    if (!ips.length) { echo(`  ${warn} no hay hosts vivos que huellar`); return; }
+    pairs = ips.flatMap(ip => plist.map(p => [ip, p]));
   } else {
-    const ips = target.includes("/") ? state.lastHosts.map(h => h.ip) : table.map(h => h.ip);
-    echo(`  ${warn} no hay auditoría de puertos en memoria — sondeando puertos web (80, 443, 8080) en ${ips.length} host(s) descubierto(s)`);
-    pairs = ips.flatMap(ip => [[ip, 80], [ip, 443], [ip, 8080]]);
+    for (const [ip, ports] of Object.entries(state.lastResults))
+      for (const p of ports)
+        if (p.service.toLowerCase().includes("http") || HTTP_FP.includes(p.port)) pairs.push([ip, p.port]);
+    if (!pairs.length && state.lastHosts.length) {
+      echo(`  ${warn} no hay auditoría de puertos en memoria — sondeando puertos web (80, 443, 8080) en ${state.lastHosts.length} host(s) descubierto(s)`);
+      pairs = state.lastHosts.flatMap(h => [[h.ip, 80], [h.ip, 443], [h.ip, 8080]]);
+    }
+    if (!pairs.length) {
+      echo(`  ${err} no hay hosts ni puertos HTTP en memoria — ejecuta 'hosts' o 'ports', o usa: fingerprint <cidr|ip> [rango]`);
+      return;
+    }
   }
-  pairs = pairs.slice(0, 200);
+  if (pairs.length > 200) {
+    echo(`  ${warn} ${pairs.length} endpoints pedidos — se huellan los 200 primeros (acota el objetivo o los puertos)`);
+    pairs = pairs.slice(0, 200);
+  }
   blank();
   echo(`  ${plus} huellando ${pairs.length} endpoint(s) HTTP asíncronamente (motor v2.0)…`);
   blank();
   const rows = [];
   for (const [ip, port] of pairs) {
-    const h = table.find(x => x.ip === ip);
+    const h = ALL_HOSTS.find(x => x.ip === ip);
     const fp = h && h.fps ? h.fps[String(port)] : null;
     if (fp) {
       rows.push({ ip, port, ...fp });
@@ -605,13 +668,14 @@ function collectFindings() {
     else if (fp.scheme === "http" && /admin|router|gateway|login|management|panel/i.test(fp.title || ""))
       hit = ["medium", "web-plain-http", "interfaz de gestión HTTP sin TLS en la LAN"];
     if (hit) {
-      const [ip, port] = key.rsplit(":", 1);
+      const cut = key.lastIndexOf(":");               // JS no tiene rsplit: "ip:puerto"
+      const ip = key.slice(0, cut), port = key.slice(cut + 1);
       rows.push({ ip, port: +port, proto: "tcp", service: fp.service || "http", level: hit[0], tag: hit[1], detail: hit[2] });
     }
   }
   for (const [ip, lst] of Object.entries(state.lastUdp))
     for (const r of lst)
-      if (r.risk_level)
+      if (r.risk_level && r.state === "open")
         rows.push({ ip, port: r.port, proto: "udp", service: r.service, level: r.risk_level, tag: r.risk, detail: r.response });
   rows.sort((a, b) => (a.level === "high" ? 0 : 1) - (b.level === "high" ? 0 : 1)
     || a.ip.split(".").reduce((n, o) => n * 256 + +o, 0) - b.ip.split(".").reduce((n, o) => n * 256 + +o, 0)
@@ -642,8 +706,8 @@ const FIXES = {
 async function cmdRisks(args) {
   const flt = (args[0] || "all").toLowerCase();
   if (!("all high medium".split(" ")).includes(flt)) { echo(`  ${err} filtro desconocido '${esc(flt)}' — usa all, high o medium`); return; }
-  if (!Object.keys(state.lastResults).length && !Object.keys(state.lastUdp).length) {
-    echo(`  ${warn} no hay auditoría en memoria — ejecuta 'ports' o 'udp' primero`); return;
+  if (!Object.keys(state.lastResults).length && !Object.keys(state.lastUdp).length && !Object.keys(state.lastFingerprints).length) {
+    echo(`  ${warn} no hay auditoría en memoria — ejecuta 'ports', 'udp' o 'fingerprint' primero`); return;
   }
   const all = collectFindings();
   const highN = all.filter(f => f.level === "high").length;
@@ -670,9 +734,8 @@ async function cmdRisks(args) {
     "web-plain-http": "interfaz de gestión HTTP sin TLS",
   };
   for (const f of findings) {
-    const sev = f.level === "high" ? COLORS.b_red("HIGH") : COLORS.yellow("MED");
-    const sevPad = f.level === "high" ? sev : sev + "    ";
-    echo(`  ${sevPad.padEnd(9)} ${f.ip.padEnd(17)} ${(f.port + "/" + f.proto).padEnd(12)} ${f.service.padEnd(15)} ${COLORS.gray(REASONS[f.tag] || f.detail || "")}`);
+    const sev = f.level === "high" ? COLORS.b_red("HIGH".padEnd(9)) : COLORS.yellow("MED".padEnd(9));
+    echo(`  ${sev} ${f.ip.padEnd(17)} ${(f.port + "/" + f.proto).padEnd(12)} ${f.service.padEnd(15)} ${COLORS.gray(REASONS[f.tag] || f.detail || "")}`);
     if (FIXES[f.tag]) echo(`  ${" ".repeat(8)} ${COLORS.cyan("↳ fix:")} ${COLORS.gray(FIXES[f.tag])}`);
   }
   echo(`  ${COLORS.gray(RULE)}`);
@@ -691,54 +754,61 @@ async function cmdUdp(args) {
   }
   if (!target) target = state.target;
   if (!target) { echo(`  ${err} sin objetivo — usa: udp <cidr|ip> [rango]`); return; }
-  const table = hostsOf(target);
-  if (!table) {
-    echo(`  ${err} la demo solo simula 192.168.1.0/24 y 127.0.0.1 — herramienta real: ${COLORS.cyan("python3 netspectre.py")}`);
-    return;
-  }
-  if (target.includes("/") && !state.lastHosts.length) { echo(`  ${warn} no hay lista de hosts en memoria — ejecuta primero 'hosts'`); return; }
-  let ips = target.includes("/") ? state.lastHosts.map(h => h.ip) : table.map(h => h.ip);
+  if (!isIPorCIDR(target)) { echo(`  ${err} objetivo inválido: '${esc(target)}'`); return; }
+  let uspec = "top100";
+  if (rangeArg) { uspec = resolvePorts(rangeArg); if (uspec === null) { echo(`  ${err} rango inválido`); return; } }
+  if (!hostsOf(target)) { NOT_SIMULATED(); return; }
+  if (target.includes("/")) state.target = target;
+  const ips = await liveIps(target);
+  if (!ips.length) { echo(`  ${warn} no hay objetivos que auditar`); return; }
   blank();
-  echo(`  ${plus} auditoría UDP: ${ips.length} host(s) × 24 puerto(s) (workers=${state.udpWorkers}, timeout=${state.udpTimeout}s)`);
-  echo(`  ${warn} UDP no tiene handshake: el silencio se reporta como 'open|filtered' (semántica de nmap)`);
+  echo(`  ${plus} auditoría UDP: ${ips.length} host(s) × ${specSize(uspec, 24)} puerto(s) (workers=${state.udpWorkers}, timeout=${state.udpTimeout}s)`);
+  echo(`  ${plus} solo cuentan como abiertos los puertos que responden; el silencio se reporta como 'open|filtered'`);
   blank();
   const hits = [];
   for (const ip of ips) {
-    const h = table.find(x => x.ip === ip);
+    const h = ALL_HOSTS.find(x => x.ip === ip);
     if (!h || !h.udps) continue;
-    for (const [port, svc, resp] of h.udps) {
+    for (const [port, svc, resp] of h.udps.filter(([p]) => inSpec(p, uspec))) {
       state.portsTested++;
       const st = resp ? "open" : "open|filtered";
-      hits.push({ ip, port, svc, resp, risk: RISK[port] ? RISK[port][1] : "", level: RISK[port] ? RISK[port][0] : "", st });
-      const color = st === "open" ? COLORS.b_green : COLORS.yellow;
+      const level = st === "open" && RISK[port] ? RISK[port][0] : "";   // sin respuesta = sin hallazgo
+      hits.push({ ip, port, svc, resp, risk: level ? RISK[port][1] : "", level, st });
+      if (st !== "open") continue;
       const b = badge(port);
-      echo(`  ${okk} ${COLORS.white(ip.padEnd(16))} ${color((port + "/udp").padEnd(11))} ${COLORS.mag(svc.padEnd(14))}${b ? " " + b : ""} ${resp ? COLORS.gray(resp.slice(0, 40)) : ""}`);
+      echo(`  ${okk} ${COLORS.white(ip.padEnd(16))} ${COLORS.b_green((port + "/udp").padEnd(11))} ${COLORS.mag(svc.padEnd(14))}${b ? " " + b : ""} ${COLORS.gray(resp.slice(0, 40))}`);
       await sleep(130);
     }
   }
-  const opened = hits.filter(h => h.st === "open").length;
-  echo(`  ${plus} auditoría UDP completada — ${COLORS.b_green(String(opened))} abierto(s) confirmado(s), ${COLORS.yellow(String(hits.length - opened))} open|filtered`);
+  const opened = hits.filter(h => h.st === "open");
+  echo(`  ${plus} auditoría UDP completada — ${COLORS.b_green(String(opened.length))} abierto(s) confirmado(s), ${COLORS.yellow(String(hits.length - opened.length))} open|filtered (sin respuesta)`);
   const risky = hits.filter(h => h.level);
   if (risky.length) {
     const high = risky.filter(f => f.level === "high").length;
     echo(`  ${warn} ${risky.length} exposición(es) UDP de riesgo: ${COLORS.b_red(String(high) + " high")}, ${COLORS.yellow(String(risky.length - high) + " medium")}`);
   } else {
-    echo(`  ${okk} sin servicios UDP de riesgo catalogados`);
+    echo(`  ${okk} ningún servicio UDP de riesgo catalogado ha respondido`);
   }
   blank();
   if (hits.length) {
     echo(title("udp findings"));
-    echo(`  ${COLORS.bold("HOST".padEnd(17))} ${COLORS.bold("PORT/PROTO".padEnd(12))} ${COLORS.bold("SERVICE".padEnd(15))} ${COLORS.bold("STATE".padEnd(15))} ${COLORS.bold("RISK".padEnd(16))} RESPONSE`);
+    echo(`  ${COLORS.bold("HOST".padEnd(17))} ${COLORS.bold("PORT/PROTO".padEnd(12))} ${COLORS.bold("SERVICE".padEnd(15))} ${COLORS.bold("RISK".padEnd(16))} RESPONSE`);
     echo(`  ${COLORS.gray(RULE)}`);
-    for (const h of hits) {
-      const st = h.st === "open" ? COLORS.b_green("open".padEnd(15)) : COLORS.yellow("open|filtered".padEnd(15));
-      echo(`  ${h.ip.padEnd(17)} ${(h.port + "/udp").padEnd(12)} ${h.svc.padEnd(15)} ${st} ${riskCol(h.port)} ${COLORS.gray(h.resp)}`);
+    for (const h of opened) {
+      const r = h.level ? riskCol(h.port) : COLORS.gray("-".padEnd(16));
+      echo(`  ${h.ip.padEnd(17)} ${(h.port + "/udp").padEnd(12)} ${h.svc.padEnd(15)} ${r} ${COLORS.gray(h.resp)}`);
     }
+    if (!opened.length) echo(COLORS.gray("  ningún servicio UDP ha respondido en la última auditoría"));
     echo(`  ${COLORS.gray(RULE)}`);
+    const silent = {};
+    for (const h of hits) if (h.st !== "open") (silent[h.ip] = silent[h.ip] || []).push(h.port);
+    for (const [ip, ports] of Object.entries(silent))
+      echo(COLORS.gray(`  ${ip.padEnd(17)} sin respuesta en ${ports.length} puerto(s) (open|filtered): ${ports.sort((a, b) => a - b).join(", ")}`));
     blank();
   }
   state.lastUdp = {};
-  for (const h of hits) (state.lastUdp[h.ip] = state.lastUdp[h.ip] || []).push({ port: h.port, state: h.st, service: h.svc, risk: h.risk, risk_level: h.level });
+  for (const ip of ips) state.lastUdp[ip] = [];
+  for (const h of hits) state.lastUdp[h.ip].push({ port: h.port, state: h.st, service: h.svc, risk: h.risk, risk_level: h.level, response: h.resp });
 }
 
 async function cmdOsint() {
@@ -772,7 +842,9 @@ async function cmdStatus() {
     ["ping_sweep", state.pingSweep ? "on" : "off"],
     ["last scan", `${state.lastHosts.length} host(s) activos en memoria`],
     ["last audit", `${openPorts} puerto(s) abierto(s) en memoria`],
-    ["riesgo", `${Object.values(state.lastResults).flat().filter(p => p.risk_level === "high").length} high · ${Object.values(state.lastResults).flat().filter(p => p.risk_level === "medium").length} medium`],
+    ["last udp", `${Object.values(state.lastUdp).flat().filter(r => r.state === "open").length} puerto(s) UDP que responden`],
+    ["fingerprints", `${Object.keys(state.lastFingerprints).length} endpoint(s) HTTP en memoria`],
+    ["riesgo", (() => { const f = collectFindings(), hi = f.filter(x => x.level === "high").length; return `${hi} high · ${f.length - hi} medium`; })()],
     ["sondas", `${state.ipsScanned} host-sonda(s) · ${state.portsTested} puerto-sonda(s)`],
     ["motor", "SIMULADO (demo web)"],
   ];
@@ -790,8 +862,8 @@ async function cmdHistory(hist) {
 }
 
 async function cmdSave() {
-  if (!state.lastHosts.length && !Object.keys(state.lastResults).length) {
-    echo(`  ${warn} nada que guardar aún — ejecuta 'hosts' o 'ports' primero`); return;
+  if (!state.lastHosts.length && !Object.keys(state.lastResults).length && !Object.keys(state.lastUdp).length && !Object.keys(state.lastFingerprints).length) {
+    echo(`  ${warn} nada que guardar aún — ejecuta 'hosts', 'ports', 'udp' o 'fingerprint' primero`); return;
   }
   const name = `netspectre-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.json`;
   const openPorts = Object.values(state.lastResults).reduce((n, arr) => n + arr.length, 0);
@@ -864,14 +936,17 @@ document.getElementById("demobtn").addEventListener("click", autoDemo);
 drawBanner();
 updatePrompt();
 
-// deep-link: demo.html#run=hosts%204.4.4.4 ejecuta el comando automáticamente
-window.addEventListener("load", () => {
+// deep-link: index.html#run=hosts%20192.168.1.0%2F24 ejecuta el comando automáticamente
+function runFromHash() {
   const m = /^#run=(.+)$/.exec(location.hash);
   if (m) {
-    const cmd = decodeURIComponent(m[1]);
+    let cmd;
+    try { cmd = decodeURIComponent(m[1]); } catch (e) { return; }
     setTimeout(() => run(cmd), 500);
   }
-});
+}
+window.addEventListener("load", runFromHash);
+window.addEventListener("hashchange", runFromHash);
 </script>
 </body>
 </html>

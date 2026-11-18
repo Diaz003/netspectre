@@ -261,7 +261,11 @@ class HTTPFingerprinter:
         self.verify_tls = verify_tls
         self.max_redirects = max_redirects
         self.max_body_bytes = max_body_bytes
-        self._sem = asyncio.Semaphore(max(1, concurrency))
+        self.concurrency = max(1, concurrency)
+        # asyncio primitives bind to the running loop on Python 3.8/3.9, so the
+        # request semaphore is created lazily inside the loop (see _semaphore)
+        self._sem: asyncio.Semaphore | None = None
+        self._sem_loop: Any = None
 
     # -- public API ---------------------------------------------------------
 
@@ -283,7 +287,8 @@ class HTTPFingerprinter:
                 self._probe(host, port, scheme, result), timeout=self.overall_timeout
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            result.error = f"timeout after {self.timeout:.0f}s: {_short(exc)}"
+            detail = f" ({_short(exc)})" if str(exc).strip() else ""
+            result.error = f"timeout: no complete answer within {self.overall_timeout:.0f}s{detail}"
         except aiohttp.ClientConnectorSSLError as exc:
             result.error = f"TLS/SSL handshake failed: {_short(exc)}"
         except aiohttp.ClientConnectorCertificateError as exc:
@@ -303,10 +308,27 @@ class HTTPFingerprinter:
     async def fingerprint_many(
         self, targets: list[tuple[str, int]]
     ) -> list[HTTPFingerprint]:
-        """Fingerprint several (host, port) pairs concurrently (TaskGroup)."""
-        async with asyncio.TaskGroup() as tg:
-            tasks = [tg.create_task(self.fingerprint(h, p)) for h, p in targets]
-        return [t.result() for t in tasks]
+        """Fingerprint several (host, port) pairs concurrently, results in input order.
+
+        At most `concurrency` targets run at once and each target's overall timeout
+        only starts when its turn comes, so a long queue never turns into a wall of
+        false 'timeout' errors. fingerprint() never raises, so gather() is safe.
+        """
+        gate = asyncio.Semaphore(self.concurrency)  # created inside the running loop
+
+        async def one(host: str, port: int) -> HTTPFingerprint:
+            async with gate:
+                return await self.fingerprint(host, port)
+
+        return list(await asyncio.gather(*(one(h, p) for h, p in targets)))
+
+    def _semaphore(self) -> asyncio.Semaphore:
+        """Request-level limiter, one per event loop."""
+        loop = asyncio.get_running_loop()
+        if self._sem is None or self._sem_loop is not loop:
+            self._sem = asyncio.Semaphore(self.concurrency)
+            self._sem_loop = loop
+        return self._sem
 
     # -- internals ----------------------------------------------------------
 
@@ -317,6 +339,7 @@ class HTTPFingerprinter:
         )
         base = f"{scheme}://{host}" + (f":{port}" if port not in (80, 443) else "")
         headers = {"User-Agent": self.user_agent, "Accept": "*/*"}
+        sem = self._semaphore()
 
         async with aiohttp.ClientSession(
             timeout=timeout, connector=connector, headers=headers
@@ -327,7 +350,7 @@ class HTTPFingerprinter:
             # ---- pass 1: layer-3 path probing, following redirects ----------
             for path in FINGERPRINT_PATHS:
                 try:
-                    async with self._sem, session.get(
+                    async with sem, session.get(
                         base + path, allow_redirects=True, max_redirects=self.max_redirects
                     ) as resp:
                         any_success = True
@@ -352,7 +375,7 @@ class HTTPFingerprinter:
 
             # ---- pass 2: layer-1 headers from the ORIGINAL (pre-redirect) response
             try:
-                async with self._sem, session.get(base + "/", allow_redirects=False) as resp:
+                async with sem, session.get(base + "/", allow_redirects=False) as resp:
                     self._score_headers(result, resp.headers)
             except (asyncio.TimeoutError, TimeoutError, aiohttp.ClientError, OSError, ssl.SSLError):
                 pass  # pass-1 evidence still stands

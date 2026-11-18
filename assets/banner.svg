@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" width="860" height="250" viewBox="0 0 860 250">
+  <style>
+    .mono { font-family: "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace; }
+    .title { font-size: 46px; font-weight: 800; fill: #8BE9FD; letter-spacing: 6px; }
+    .sub { font-size: 15px; fill: #9AA5B1; }
+    .ln { font-size: 14px; opacity: 0; animation: show 9s steps(1) infinite; }
+    .ok { fill: #50FA7B; } .warn { fill: #FFB86C; } .risk { fill: #FF5555; } .txt { fill: #E6EDF3; } .dim { fill: #6B7785; }
+    .l1 { animation-delay: .6s; } .l2 { animation-delay: 1.4s; } .l3 { animation-delay: 2.2s; } .l4 { animation-delay: 3s; }
+    @keyframes show { 0% { opacity: 0; } 5% { opacity: 1; } 90% { opacity: 1; } 100% { opacity: 0; } }
+    .cursor { animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .scan { animation: scan 4s linear infinite; }
+    @keyframes scan { from { transform: translateY(0); } to { transform: translateY(250px); } }
+    @media (prefers-reduced-motion: reduce) { .ln { animation: none; opacity: 1; } .scan, .cursor { animation: none; } }
+  </style>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8BE9FD" stop-opacity="0"/>
+      <stop offset="1" stop-color="#8BE9FD" stop-opacity=".08"/>
+    </linearGradient>
+    <clipPath id="win"><rect x="10" y="10" width="840" height="230" rx="12"/></clipPath>
+  </defs>
+
+  <rect x="10" y="10" width="840" height="230" rx="12" fill="#0D1117" stroke="#30363D"/>
+  <rect x="10" y="10" width="840" height="34" rx="12" fill="#161B22"/>
+  <rect x="10" y="32" width="840" height="12" fill="#161B22"/>
+  <circle cx="34" cy="27" r="6" fill="#FF5F56"/><circle cx="54" cy="27" r="6" fill="#FFBD2E"/><circle cx="74" cy="27" r="6" fill="#27C93F"/>
+  <text x="430" y="32" text-anchor="middle" class="mono sub">netspectre — zsh</text>
+
+  <g clip-path="url(#win)">
+    <rect class="scan" x="10" y="-60" width="840" height="60" fill="url(#g)"/>
+  </g>
+
+  <text x="40" y="100" class="mono title">NETSPECTRE</text>
+  <text x="42" y="126" class="mono sub">auditoría de tu red local · v2.0.1</text>
+
+  <text x="520" y="80" class="mono ln l1"><tspan class="dim">netspectre&gt;</tspan><tspan class="txt"> hosts 192.168.1.0/24</tspan></text>
+  <text x="520" y="104" class="mono ln l2"><tspan class="ok">[✓]</tspan><tspan class="txt"> 5 hosts vivos de 254</tspan></text>
+  <text x="520" y="128" class="mono ln l3"><tspan class="ok">[✓]</tspan><tspan class="txt"> 8080/tcp nginx </tspan><tspan class="warn">[warn]</tspan></text>
+  <text x="520" y="152" class="mono ln l4"><tspan class="ok">[✓]</tspan><tspan class="txt"> 445/tcp smb </tspan><tspan class="risk">[RISK]</tspan></text>
+
+  <text x="42" y="200" class="mono" font-size="15"><tspan fill="#BD93F9">netspectre</tspan><tspan class="dim">(192.168.1.0/24)</tspan><tspan fill="#FF79C6"> &gt; </tspan><tspan class="txt cursor">█</tspan></text>
+</svg>

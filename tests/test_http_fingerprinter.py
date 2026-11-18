@@ -282,7 +282,6 @@ def test_normalize_host_accepts_bare_and_url_forms():
 
 
 def test_fingerprint_rejects_empty_host_without_network(fp):
-    result = hfp.HTTPFingerprinter().fingerprint.__wrapped__ if False else None
     # direct call: fingerprint() returns a result with .error set for a bad host
     res = asyncio_run_fp(fp)
     assert res.error == "empty target host"
